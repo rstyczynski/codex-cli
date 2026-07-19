@@ -2,6 +2,8 @@
 .codex/
 .codex-cli/
 node_modules/
+run_outputs/
+work/
 coverage/
 .DS_Store
 *.log
