@@ -1,0 +1,15 @@
+{
+  "name": "codex-cli-app-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "codex-cli": "bin/codex-cli"
+  },
+  "scripts": {
+    "check": "node --check bin/codex-cli",
+    "test": "node --check bin/codex-cli && node --test tests/*.test.mjs",
+    "test:coverage": "node --experimental-test-coverage --test-coverage-include=bin/codex-cli --test-coverage-lines=90 --test-coverage-branches=70 --test-coverage-functions=80 --test tests/*.test.mjs",
+    "help": "node bin/codex-cli --help"
+  }
+}

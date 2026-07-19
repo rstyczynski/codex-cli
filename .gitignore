@@ -1,0 +1,9 @@
+.cdx/
+node_modules/
+coverage/
+.DS_Store
+*.log
+*.pid
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

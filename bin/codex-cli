@@ -1,0 +1,2037 @@
+#!/usr/bin/env node
+/**
+ * Submit a prompt to a Codex app-server thread and stream its assistant text.
+ *
+ * It can use an existing app-server socket, launch a direct standard-I/O
+ * app-server connection, or talk to a persistent local broker. It talks to
+ * Codex app-server directly and does not automate any editor UI.
+ */
+import { spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { appendFile, chmod, lstat, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import net from "node:net";
+import path from "node:path";
+import { stdin, stdout, stderr } from "node:process";
+import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
+
+const usage = `Usage: codex-cli (--thread ID | --new) [options] [PROMPT]
+
+Send a prompt to a Codex app-server thread.
+
+Options:
+  --socket PATH       Unix socket exposed by the Codex app-server
+  --direct            Run a direct Codex app-server connection over standard I/O
+  --broker [ACTION]   Use broker mode, or run start, status, stop, or threads
+  --broker-socket PATH
+                      Broker socket (default: .codex-cli/codex-cli-broker.sock)
+  --prompt TEXT        Prompt text (alternative to positional PROMPT)
+  --config-json PATH   JSON object of Codex config overrides for a new thread
+  --thread-params JSON Thread/start parameters as a JSON object or @FILE (repeatable)
+  --turn-params JSON   Turn/start parameters as a JSON object or @FILE (repeatable)
+  --thread ID          Existing Codex thread ID
+  --new                Create a new thread in the managed app-server
+  --state PATH         Thread-state file (default: .codex-cli/codex-cli.json)
+  --model MODEL        Use and remember a Codex model for this workspace thread
+  --clear-model        Stop overriding the model and use the Codex default
+  --start-daemon       Start the managed app-server before connecting
+  --cwd PATH           Workspace to use for this turn (default: current directory)
+  --timeout SECONDS    Maximum time to wait for turn completion (default: 15)
+  --approval MODE      Approval policy: decline (default), accept, or accept-for-session
+  --approval-log PATH  Append approval requests and decisions to a TOML audit log
+  --experimental-api   Enable experimental app-server fields and methods
+  --bash_completion    Print Bash completion code for sourcing
+  --interactive         Answer Codex user-input requests from the terminal
+  --repl                Keep a direct thread open for additional terminal turns
+  --interrupt-pending   Interrupt active turns in the selected thread before starting
+  --verbosity LEVEL     Human output: low (default), medium, or high
+  --progress            Show a spinner while waiting for visible output on a terminal (default: enabled)
+  --debug               Log app-server requests, events, and turn status to standard error
+  --agentic-error-code  Map Codex's validated final result to process exit status 0-15
+  --json               Emit raw JSON events, or one validated agentic result
+  --stdin              Read the prompt from standard input
+  --codex PATH         Codex executable to use when starting the daemon (default: codex)
+  -h, --help           Show this help
+
+Examples:
+  codex app-server daemon start
+  codex-cli --new "Review the current change"
+  codex-cli "Continue the review" # uses the saved workspace thread
+  codex-cli --socket /tmp/codex.sock --thread THREAD_ID "Continue the review"
+  codex-cli --broker start
+  codex-cli --broker threads
+  codex-cli --broker --new --prompt "Review the current change"
+  codex-cli --broker --prompt "Continue the review"
+  codex-cli --broker --agentic-error-code "Apply the fix and run tests"
+`;
+
+const AGENTIC_SYSTEM_ERROR_EXIT_CODE = 70;
+const AGENTIC_CONTRACT_ERROR_EXIT_CODE = 72;
+const AGENTIC_RESERVED_EXIT_CODES = new Set([13]);
+let agenticErrorCodeActive = false;
+
+function fail(message, exitCode = 2) {
+  if (agenticErrorCodeActive && exitCode >= 0 && exitCode <= 15) exitCode = AGENTIC_SYSTEM_ERROR_EXIT_CODE;
+  stderr.write(`codex-cli: ${message}\n`);
+  process.exitCode = exitCode;
+}
+
+function environmentValue(name, environment = process.env) {
+  if (environment[name] !== undefined) return environment[name];
+  const match = Object.keys(environment).find((key) => key.toUpperCase() === name.toUpperCase());
+  return match ? environment[match] : undefined;
+}
+
+const BROKER_ACTIONS = ["start", "status", "stop", "threads"];
+const OPTION_DEFINITIONS = [
+  { flags: ["--help", "-h"], key: "help", kind: "boolean", environment: "HELP" },
+  { flags: ["--socket"], key: "socket", kind: "value" }, { flags: ["--direct"], key: "direct", kind: "boolean" },
+  { flags: ["--broker"], key: "broker", kind: "broker" }, { flags: ["--broker-serve"], key: "brokerServe", kind: "boolean", impliesBroker: true },
+  { flags: ["--broker-socket"], key: "brokerSocket", kind: "value" }, { flags: ["--prompt"], key: "prompt", kind: "append" },
+  { flags: ["--config-json"], key: "configJson", kind: "value" }, { flags: ["--thread-params"], key: "threadParamSources", kind: "append" },
+  { flags: ["--turn-params"], key: "turnParamSources", kind: "append" }, { flags: ["--thread"], key: "thread", kind: "value", explicit: "threadExplicit" },
+  { flags: ["--new"], key: "new", kind: "boolean" }, { flags: ["--state"], key: "state", kind: "value", explicit: "stateExplicit" },
+  { flags: ["--model"], key: "model", kind: "value", explicit: "modelExplicit" }, { flags: ["--clear-model"], key: "clearModel", kind: "boolean" },
+  { flags: ["--start-daemon"], key: "startDaemon", kind: "boolean" }, { flags: ["--cwd"], key: "cwd", kind: "value" },
+  { flags: ["--timeout"], key: "timeout", kind: "positive-number" }, { flags: ["--approval"], key: "approval", kind: "approval" },
+  { flags: ["--approval-log"], key: "approvalLog", kind: "value" }, { flags: ["--experimental-api"], key: "experimentalApi", kind: "boolean" },
+  { flags: ["--bash_completion", "--bash-completion"], key: "bashCompletion", kind: "boolean", environment: "BASH_COMPLETION" },
+  { flags: ["--interactive"], key: "interactive", kind: "boolean" }, { flags: ["--repl"], key: "repl", kind: "boolean" },
+  { flags: ["--interrupt-pending"], key: "interruptPending", kind: "boolean" }, { flags: ["--verbosity"], key: "verbosity", kind: "verbosity" },
+  { flags: ["--progress"], key: "progress", kind: "boolean" }, { flags: ["--debug"], key: "debug", kind: "boolean" },
+  { flags: ["--agentic-error-code"], key: "agenticErrorCode", kind: "boolean" },
+  { flags: ["--json"], key: "json", kind: "boolean" }, { flags: ["--stdin"], key: "stdin", kind: "boolean" },
+  { flags: ["--codex"], key: "codex", kind: "value" }, { flags: ["--completion-models"], key: "completionModels", kind: "boolean" },
+  { flags: ["--completion-cached-models"], key: "completionCachedModels", kind: "boolean" },
+];
+const OPTION_BY_FLAG = new Map(OPTION_DEFINITIONS.flatMap((definition) => definition.flags.map((flag) => [flag, definition])));
+
+function environmentName(definition) {
+  return `CDXCLI_${(definition.environment ?? definition.flags[0].slice(2)).replaceAll("-", "_").toUpperCase()}`;
+}
+
+function booleanValue(value, label) {
+  if (["1", "true", "yes", "on"].includes(value.toLowerCase())) return true;
+  if (["0", "false", "no", "off"].includes(value.toLowerCase())) return false;
+  throw new Error(`${label} must be true or false`);
+}
+
+function assignOption(options, definition, value, source) {
+  const label = source === "environment" ? environmentName(definition) : definition.flags[0];
+  if (definition.kind === "boolean") options[definition.key] = source === "environment" ? booleanValue(value, label) : true;
+  else if (definition.kind === "broker") {
+    if (source === "environment") {
+      if (BROKER_ACTIONS.includes(value)) { options.broker = true; options.brokerAction = value; }
+      else { options.broker = booleanValue(value, label); if (!options.broker) options.brokerAction = undefined; }
+    } else {
+      options.broker = true;
+      if (BROKER_ACTIONS.includes(value)) options.brokerAction = value;
+    }
+  } else if (definition.kind === "positive-number") {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) throw new Error(`${label} must be a positive number of seconds`);
+    options[definition.key] = number;
+  } else if (definition.kind === "approval") {
+    if (!["decline", "accept", "accept-for-session"].includes(value)) throw new Error(`${label} must be decline, accept, or accept-for-session`);
+    options[definition.key] = value;
+  } else if (definition.kind === "verbosity") {
+    if (!["low", "medium", "high"].includes(value)) throw new Error(`${label} must be low, medium, or high`);
+    options[definition.key] = value;
+  } else if (definition.kind === "append") {
+    options[definition.key] = source === "environment" ? [value] : [...options[definition.key], value];
+  } else options[definition.key] = value;
+  if (definition.impliesBroker && options[definition.key]) options.broker = true;
+  if (definition.explicit) options[definition.explicit] = true;
+}
+
+function applyEnvironmentOverrides(options, environment = process.env) {
+  for (const definition of OPTION_DEFINITIONS) {
+    const value = environmentValue(environmentName(definition), environment);
+    if (value !== undefined) assignOption(options, definition, value, "environment");
+  }
+}
+
+function parseArgs(argv) {
+  const options = { cwd: process.cwd(), json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, progress: true, debug: false, agenticErrorCode: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 15, approval: "decline", prompt: [], threadParamSources: [], turnParamSources: [] };
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    const definition = OPTION_BY_FLAG.get(argument);
+    if (!definition) {
+      if (argument.startsWith("-")) throw new Error(`unknown option: ${argument}`);
+      options.prompt.push(argument);
+      continue;
+    }
+    if (definition.kind === "boolean") assignOption(options, definition, undefined, "command");
+    else if (definition.kind === "broker") assignOption(options, definition, BROKER_ACTIONS.includes(argv[index + 1]) ? argv[++index] : undefined, "command");
+    else {
+      const value = argv[++index];
+      if (!value) throw new Error(`${argument} requires a value`);
+      assignOption(options, definition, value, "command");
+    }
+  }
+  return options;
+}
+
+function agenticModeRequested(argv, environment = process.env) {
+  if (argv.includes("--agentic-error-code")) return true;
+  const value = environmentValue("CDXCLI_AGENTIC_ERROR_CODE", environment);
+  return typeof value === "string" && ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+const AGENTIC_RESULT_INSTRUCTIONS = `For script integration, your final assistant message must contain exactly one JSON object and no Markdown or other text:
+{"goal_achieved":boolean,"agentic_exit_code":integer,"summary":"short result","reason":"why the goal was or was not achieved"}
+Set goal_achieved to true only when the requested task is fully complete and no required work remains. Requested edits must be applied, and requested checks or tests must be completed unless the user explicitly allowed them to be skipped. Set it to false when work is partial, blocked, denied, impossible, materially uncertain, or missing required verification. Use agentic_exit_code 0 as the default when goal_achieved is true and 1 as the default when it is false. Codes 2-15 may be used only when the user's prompt explicitly defines their meaning; a caller-defined code may accompany either goal_achieved value. Never use code 13.`;
+
+const AGENTIC_RESULT_SCHEMA = {
+  type: "object",
+  properties: {
+    goal_achieved: { type: "boolean" },
+    agentic_exit_code: { type: "integer", enum: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15] },
+    summary: { type: "string" },
+    reason: { type: "string" },
+  },
+  required: ["goal_achieved", "agentic_exit_code", "summary", "reason"],
+  additionalProperties: false,
+};
+
+function promptWithAgenticResultContract(prompt) {
+  return `${prompt}\n\n${AGENTIC_RESULT_INSTRUCTIONS}`;
+}
+
+function agenticContractError(message) {
+  return Object.assign(new Error(`invalid agentic result contract: ${message}`), { exitCode: AGENTIC_CONTRACT_ERROR_EXIT_CODE });
+}
+
+function parseAgenticResult(message) {
+  if (typeof message !== "string" || !message.trim()) throw agenticContractError("final assistant message is missing");
+  let value;
+  try { value = JSON.parse(message.trim()); }
+  catch (error) { throw agenticContractError(`final assistant message is not valid JSON: ${error.message}`); }
+  if (!isJsonObject(value)) throw agenticContractError("final assistant message must be a JSON object");
+  if (typeof value.goal_achieved !== "boolean") throw agenticContractError("goal_achieved must be a boolean");
+  if (!Number.isInteger(value.agentic_exit_code) || value.agentic_exit_code < 0 || value.agentic_exit_code > 15) {
+    throw agenticContractError("agentic_exit_code must be an integer from 0 to 15");
+  }
+  if (AGENTIC_RESERVED_EXIT_CODES.has(value.agentic_exit_code)) throw agenticContractError(`agentic_exit_code ${value.agentic_exit_code} is reserved`);
+  if (value.agentic_exit_code === 0 && !value.goal_achieved) throw agenticContractError("agentic_exit_code 0 requires goal_achieved true");
+  if (value.agentic_exit_code === 1 && value.goal_achieved) throw agenticContractError("agentic_exit_code 1 requires goal_achieved false");
+  if (typeof value.summary !== "string") throw agenticContractError("summary must be a string");
+  if (typeof value.reason !== "string") throw agenticContractError("reason must be a string");
+  return {
+    goal_achieved: value.goal_achieved,
+    agentic_exit_code: value.agentic_exit_code,
+    summary: value.summary,
+    reason: value.reason,
+  };
+}
+
+function finalAgentMessage(turn) {
+  return [...(turn?.items ?? [])].reverse().find((item) => item?.type === "agentMessage" && typeof item.text === "string")?.text;
+}
+
+function emitAgenticResult(options, message, output = stdout) {
+  const result = parseAgenticResult(message);
+  output.write(options.json ? `${JSON.stringify(result)}\n` : `${result.summary}\n`);
+  process.exitCode = result.agentic_exit_code;
+  return result;
+}
+
+function isJsonObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function loadJsonObjectOptions(flag, sources, cwd) {
+  let result = {};
+  for (const source of sources) {
+    let text = source;
+    if (source.startsWith("@")) {
+      if (source.length === 1) throw new Error(`${flag} @FILE requires a file path`);
+      const filePath = path.resolve(cwd, source.slice(1));
+      try { text = await readFile(filePath, "utf8"); }
+      catch (error) { throw new Error(`cannot read ${flag} file at ${filePath}: ${error.message}`); }
+    }
+    let value;
+    try { value = JSON.parse(text); }
+    catch (error) { throw new Error(`${flag} must be valid JSON: ${error.message}`); }
+    if (!isJsonObject(value)) throw new Error(`${flag} must contain a JSON object`);
+    result = { ...result, ...value };
+  }
+  return result;
+}
+
+function rejectManagedParams(flag, params, managed) {
+  const conflicts = managed.filter((name) => Object.hasOwn(params, name));
+  if (conflicts.length) throw new Error(`${flag} cannot set CLI-managed ${conflicts.join(", ")}`);
+}
+
+const SANDBOX_VALUES = ["read-only", "workspace-write", "danger-full-access"];
+
+function validateSandboxParam(flag, value) {
+  if (value === undefined) return;
+  if (!SANDBOX_VALUES.includes(value)) throw new Error(`${flag} sandbox must be read-only, workspace-write, or danger-full-access`);
+}
+
+function normalizeSandboxParams(options) {
+  validateSandboxParam("--thread-params", options.threadParams?.sandbox);
+  validateSandboxParam("--turn-params", options.turnParams?.sandbox);
+  if (!Object.hasOwn(options.turnParams ?? {}, "sandbox")) return;
+  if (!options.new) throw new Error("--turn-params sandbox is not enforced by this app-server; use --new --thread-params '{\"sandbox\":\"read-only\"}'");
+  if (Object.hasOwn(options.threadParams ?? {}, "sandbox") && options.threadParams.sandbox !== options.turnParams.sandbox) {
+    throw new Error("--turn-params sandbox conflicts with --thread-params sandbox");
+  }
+  options.threadParams = { ...(options.threadParams ?? {}), sandbox: options.turnParams.sandbox };
+  const { sandbox: _sandbox, ...turnParams } = options.turnParams;
+  options.turnParams = turnParams;
+}
+
+function hasModelOverride(options) {
+  return options.clearModel || typeof options.model === "string";
+}
+
+async function readSavedState(statePath) {
+  let contents;
+  try {
+    contents = await readFile(statePath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw new Error(`cannot read thread state at ${statePath}: ${error.message}`);
+  }
+  try {
+    const state = JSON.parse(contents);
+    return {
+      threadId: typeof state.threadId === "string" && state.threadId ? state.threadId : undefined,
+      model: typeof state.model === "string" && state.model ? state.model : undefined,
+      lastPrompt: typeof state.lastPrompt === "string" && state.lastPrompt ? state.lastPrompt : undefined,
+      brokerInstanceId: typeof state.brokerInstanceId === "string" ? state.brokerInstanceId : undefined,
+      transport: typeof state.transport === "string" ? state.transport : undefined,
+    };
+  } catch (error) {
+    throw new Error(`cannot read thread state at ${statePath}: ${error.message}`);
+  }
+}
+
+async function saveThread(statePath, threadId, model, extra = {}) {
+  await mkdir(path.dirname(statePath), { recursive: true });
+  const temporary = `${statePath}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify({ threadId, ...(model ? { model } : {}), ...extra }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await rename(temporary, statePath);
+}
+
+async function validateWorkspace(workspace) {
+  try {
+    if (!(await stat(workspace)).isDirectory()) throw new Error("not a directory");
+  } catch (error) {
+    if (error.code === "ENOENT") throw new Error(`workspace directory does not exist: ${workspace} (set --cwd or CDXCLI_CWD to an existing directory)`);
+    throw new Error(`cannot use workspace directory ${workspace}: ${error.message}`);
+  }
+}
+
+function run(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: "inherit" });
+    child.on("error", reject);
+    child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`)));
+  });
+}
+
+async function promptFor(options) {
+  if (options.stdin) return readAll(stdin);
+  return options.prompt.join(" ");
+}
+
+function readAll(stream) {
+  return new Promise((resolve, reject) => {
+    let value = "";
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk) => { value += chunk; });
+    stream.on("end", () => resolve(value));
+    stream.on("error", reject);
+  });
+}
+
+class JsonRpcClient {
+  constructor(socketPath, onEvent, onRequest) {
+    this.nextId = 1;
+    this.pending = new Map();
+    this.buffer = "";
+    this.onEvent = onEvent;
+    this.onRequest = onRequest;
+    this.socket = net.createConnection(socketPath);
+    this.socket.setNoDelay(true);
+    this.socket.on("error", (error) => this.rejectAll(error));
+    this.socket.on("close", () => {
+      this.closed = true;
+      this.rejectAll(new Error("app-server closed the WebSocket connection"));
+    });
+    this.ready = new Promise((resolve, reject) => {
+      const key = randomBytes(16).toString("base64");
+      this.socket.once("connect", () => this.socket.write(`GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+      let handshake = "";
+      const receiveHandshake = (chunk) => {
+        handshake += chunk.toString("binary");
+        const end = handshake.indexOf("\r\n\r\n");
+        if (end === -1) return;
+        this.socket.off("data", receiveHandshake);
+        const expected = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+        if (!handshake.startsWith("HTTP/1.1 101") || !handshake.toLowerCase().includes(`sec-websocket-accept: ${expected}`.toLowerCase())) return reject(new Error("app-server rejected WebSocket upgrade"));
+        const remainder = Buffer.from(handshake.slice(end + 4), "binary");
+        this.socket.on("data", (data) => this.receiveFrames(data));
+        resolve();
+        if (remainder.length) queueMicrotask(() => this.receiveFrames(remainder));
+      };
+      this.socket.on("data", receiveHandshake);
+      this.socket.once("error", reject);
+      this.socket.once("close", () => reject(new Error("app-server closed the WebSocket connection")));
+    });
+    this.frameBuffer = Buffer.alloc(0);
+  }
+
+  receiveFrames(chunk) {
+    this.frameBuffer = Buffer.concat([this.frameBuffer, chunk]);
+    while (this.frameBuffer.length >= 2) {
+      const lengthCode = this.frameBuffer[1] & 127;
+      const headerLength = lengthCode < 126 ? 2 : lengthCode === 126 ? 4 : 10;
+      if (this.frameBuffer.length < headerLength) return;
+      const payloadLength = lengthCode < 126 ? lengthCode : lengthCode === 126 ? this.frameBuffer.readUInt16BE(2) : Number(this.frameBuffer.readBigUInt64BE(2));
+      if (this.frameBuffer.length < headerLength + payloadLength) return;
+      const opcode = this.frameBuffer[0] & 15;
+      const payload = this.frameBuffer.subarray(headerLength, headerLength + payloadLength);
+      this.frameBuffer = this.frameBuffer.subarray(headerLength + payloadLength);
+      if (opcode === 8) return this.rejectAll(new Error("app-server closed the WebSocket connection"));
+      if (opcode !== 1) continue;
+      let message;
+      try { message = JSON.parse(payload.toString("utf8")); } catch { continue; }
+      this.receiveMessage(message);
+    }
+  }
+
+  receiveMessage(message) {
+    if (Object.hasOwn(message, "id") && message.method) {
+      this.handleServerRequest(message);
+    } else if (Object.hasOwn(message, "id")) {
+      const pending = this.pending.get(message.id);
+      if (!pending) return;
+      this.pending.delete(message.id);
+      if (message.error) pending.reject(jsonRpcResponseError(message.error));
+      else pending.resolve(message.result);
+    } else if (message.method) {
+      this.onEvent(message);
+    }
+  }
+
+  handleServerRequest(request) {
+    Promise.resolve(this.onRequest?.(request)).then(
+      (result) => this.sendServerResponse({ jsonrpc: "2.0", id: request.id, result: result ?? null }),
+      (error) => this.sendServerResponse({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: error.message ?? String(error) } }),
+    );
+  }
+
+  sendServerResponse(message) {
+    // The app-server can exit while an approval or user-input callback is
+    // pending. Its exit handler resolves that callback so broker cleanup can
+    // continue; there is no transport left to receive the response in that
+    // case, so replying must be best effort.
+    if (this.closed) return;
+    try { this.send(message); } catch (error) {
+      this.closed = true;
+      this.rejectAll(error);
+    }
+  }
+
+  send(message) {
+    const payload = Buffer.from(JSON.stringify(message));
+    const mask = randomBytes(4);
+    let header;
+    if (payload.length < 126) {
+      header = Buffer.from([129, 128 | payload.length]);
+    } else if (payload.length <= 0xffff) {
+      header = Buffer.alloc(4);
+      header[0] = 129;
+      header[1] = 254;
+      header.writeUInt16BE(payload.length, 2);
+    } else {
+      header = Buffer.alloc(10);
+      header[0] = 129;
+      header[1] = 255;
+      header.writeBigUInt64BE(BigInt(payload.length), 2);
+    }
+    const masked = Buffer.from(payload);
+    for (let index = 0; index < masked.length; index += 1) masked[index] ^= mask[index % 4];
+    this.socket.write(Buffer.concat([header, mask, masked]));
+  }
+
+  request(method, params) {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.ready.then(() => {
+        this.pending.set(id, { resolve, reject });
+        this.send({ jsonrpc: "2.0", id, method, params });
+      }).catch(reject);
+    });
+  }
+
+  rejectAll(error) {
+    for (const { reject } of this.pending.values()) reject(error);
+    this.pending.clear();
+  }
+
+  close() { this.closed = true; this.socket.end(); }
+}
+
+class StdioJsonRpcClient {
+  constructor(command, onEvent, onRequest, spawnOptions = {}) {
+    this.nextId = 1;
+    this.pending = new Map();
+    this.onEvent = onEvent;
+    this.onRequest = onRequest;
+    this.buffer = "";
+    this.closed = false;
+    this.child = spawn(command, ["app-server", "--stdio"], { stdio: ["pipe", "pipe", "pipe"], ...spawnOptions });
+    this.child.stdout.setEncoding("utf8");
+    this.child.stdout.on("data", (chunk) => this.receiveLines(chunk));
+    this.child.stderr.on("data", (chunk) => stderr.write(chunk));
+    this.child.on("error", (error) => { this.closed = true; this.rejectAll(error); });
+    this.child.on("exit", (code, signal) => { this.closed = true; this.rejectAll(new Error(`direct app-server exited (${signal ?? code ?? "unknown"})`)); });
+    this.ready = Promise.resolve();
+  }
+
+  receiveLines(chunk) {
+    this.buffer += chunk;
+    for (;;) {
+      const newline = this.buffer.indexOf("\n");
+      if (newline === -1) return;
+      const line = this.buffer.slice(0, newline).trim();
+      this.buffer = this.buffer.slice(newline + 1);
+      if (!line) continue;
+      try { this.receiveMessage(JSON.parse(line)); } catch { /* Ignore non-protocol output. */ }
+    }
+  }
+
+  receiveMessage(message) {
+    if (Object.hasOwn(message, "id") && message.method) {
+      this.handleServerRequest(message);
+    } else if (Object.hasOwn(message, "id")) {
+      const pending = this.pending.get(message.id);
+      if (!pending) return;
+      this.pending.delete(message.id);
+      if (message.error) pending.reject(jsonRpcResponseError(message.error));
+      else pending.resolve(message.result);
+    } else if (message.method) {
+      this.onEvent(message);
+    }
+  }
+
+  handleServerRequest(request) {
+    Promise.resolve(this.onRequest?.(request)).then(
+      (result) => this.sendServerResponse({ jsonrpc: "2.0", id: request.id, result: result ?? null }),
+      (error) => this.sendServerResponse({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: error.message ?? String(error) } }),
+    );
+  }
+
+  sendServerResponse(message) {
+    // A pending approval can resolve as part of child-exit cleanup. At that
+    // point there is deliberately no app-server transport left to answer.
+    if (this.closed) return;
+    try { this.send(message); } catch (error) {
+      this.closed = true;
+      this.rejectAll(error);
+    }
+  }
+
+  request(method, params) {
+    if (this.closed) return Promise.reject(new Error("direct app-server is not running"));
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.ready.then(() => {
+        if (this.closed) throw new Error("direct app-server is not running");
+        this.pending.set(id, { resolve, reject });
+        this.send({ jsonrpc: "2.0", id, method, params });
+      }).catch(reject);
+    });
+  }
+
+  rejectAll(error) {
+    for (const { reject } of this.pending.values()) reject(error);
+    this.pending.clear();
+  }
+
+  send(message) {
+    if (this.closed || this.child.stdin.destroyed) throw new Error("direct app-server is not running");
+    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.rejectAll(new Error("direct app-server closed"));
+    this.child.stdin.end();
+    const forceStop = setTimeout(() => this.child.kill(), 1000);
+    forceStop.unref();
+    this.child.once("exit", () => clearTimeout(forceStop));
+  }
+}
+
+function shellSingleQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function bashCompletionScript(options) {
+  const nodePath = shellSingleQuote(process.execPath);
+  const scriptPath = shellSingleQuote(path.resolve(process.argv[1]));
+  const codexPath = shellSingleQuote(options.codex);
+  return [
+    "# Bash completion for codex-cli. Source this output in Bash.",
+    `_CODEX_CLI_NODE=${nodePath}`,
+    `_CODEX_CLI_SCRIPT=${scriptPath}`,
+    `_CODEX_CLI_DEFAULT_CODEX=${codexPath}`,
+    "",
+    "_codex_cli_model_values() {",
+    "  local completion_cwd=$1 completion_codex=$2 cache_key=\"$1|$2\"",
+    "  if [[ ${_CODEX_CLI_MODEL_CACHE_KEY-} != \"$cache_key\" || -z ${_CODEX_CLI_MODEL_CACHE_AT+x} || $((SECONDS - _CODEX_CLI_MODEL_CACHE_AT)) -ge 30 ]]; then",
+    "    _CODEX_CLI_MODEL_CACHE=$(\"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --completion-cached-models 2>/dev/null)",
+    "    if [[ -z $_CODEX_CLI_MODEL_CACHE ]]; then",
+    "      _CODEX_CLI_MODEL_CACHE=$(\"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --completion-models --timeout 10 --cwd \"$completion_cwd\" --codex \"$completion_codex\" 2>/dev/null)",
+    "    fi",
+    "    _CODEX_CLI_MODEL_CACHE_KEY=$cache_key",
+    "    _CODEX_CLI_MODEL_CACHE_AT=$SECONDS",
+    "  fi",
+    "}",
+    "",
+    "_codex_cli_compgen() {",
+    "  local mode=$1 prefix=$2 candidate",
+    "  COMPREPLY=()",
+    "  while IFS= read -r candidate; do COMPREPLY+=(\"$candidate\"); done < <(compgen \"$mode\" -- \"$prefix\")",
+    "}",
+    "",
+    "_codex_cli_words() {",
+    "  local values=$1 prefix=$2 candidate",
+    "  COMPREPLY=()",
+    "  while IFS= read -r candidate; do COMPREPLY+=(\"$candidate\"); done < <(compgen -W \"$values\" -- \"$prefix\")",
+    "}",
+    "",
+    "_codex_cli_at_files() {",
+    "  local prefix=${1#@}",
+    "  local candidate",
+    "  COMPREPLY=()",
+    "  while IFS= read -r candidate; do COMPREPLY+=(\"@$candidate\"); done < <(compgen -f -- \"$prefix\")",
+    "}",
+    "",
+    "_codex_cli_complete() {",
+    "  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}",
+    "  local completion_cwd=$PWD completion_codex=$_CODEX_CLI_DEFAULT_CODEX index",
+    "  for ((index = 1; index < COMP_CWORD; index += 1)); do",
+    "    case ${COMP_WORDS[index]} in",
+    "      --cwd) ((index += 1)); completion_cwd=${COMP_WORDS[index]} ;;",
+    "      --codex) ((index += 1)); completion_codex=${COMP_WORDS[index]} ;;",
+    "    esac",
+    "  done",
+    "  case $prev in",
+    "    --model) _codex_cli_model_values \"$completion_cwd\" \"$completion_codex\"; _codex_cli_words \"$_CODEX_CLI_MODEL_CACHE\" \"$cur\"; return ;;",
+    "    --approval) _codex_cli_words 'decline accept accept-for-session' \"$cur\"; return ;;",
+    "    --verbosity) _codex_cli_words 'low medium high' \"$cur\"; return ;;",
+    "    --broker) if [[ $cur != -* ]]; then _codex_cli_words 'start status stop threads' \"$cur\"; return; fi ;;",
+    "    --cwd) _codex_cli_compgen -d \"$cur\"; return ;;",
+    "    --socket|--broker-socket|--state|--approval-log|--config-json) _codex_cli_compgen -f \"$cur\"; return ;;",
+    "    --thread-params|--turn-params) _codex_cli_at_files \"$cur\"; return ;;",
+    "    --codex) _codex_cli_compgen -c \"$cur\"; return ;;",
+    "  esac",
+    "  if [[ $cur == -* ]]; then",
+    "    _codex_cli_words '--socket --direct --broker --broker-socket --prompt --config-json --thread-params --turn-params --thread --new --state --model --clear-model --start-daemon --cwd --timeout --approval --approval-log --experimental-api --interactive --repl --interrupt-pending --verbosity --progress --debug --agentic-error-code --json --stdin --codex --bash_completion --bash-completion --help -h' \"$cur\"",
+    "  fi",
+    "}",
+    "",
+    "if ! type -t codex-cli >/dev/null 2>&1; then",
+    "  codex-cli() { \"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" \"$@\"; }",
+    "fi",
+    "complete -o default -o bashdefault -F _codex_cli_complete codex-cli",
+    "_codex_cli_node_complete() {",
+    "  local script=${COMP_WORDS[1]-}",
+    "  [[ $script == \"$_CODEX_CLI_SCRIPT\" || $script == */codex-cli || $script == codex-cli ]] || return 1",
+    "  _codex_cli_complete",
+    "}",
+    "# Do not replace a user's existing Node completion handler.",
+    "if ! complete -p node >/dev/null 2>&1; then",
+    "  complete -o default -o bashdefault -F _codex_cli_node_complete node",
+    "fi",
+    "",
+  ].join("\n");
+}
+
+function writeCompletionModels(models) {
+  stdout.write(models.join("\n"));
+  if (models.length) stdout.write("\n");
+}
+
+async function readCachedCompletionModels() {
+  const codexHome = process.env.CODEX_HOME ?? (process.env.HOME ? path.join(process.env.HOME, ".codex") : undefined);
+  if (!codexHome) return [];
+  try {
+    const cache = JSON.parse(await readFile(path.join(codexHome, "models_cache.json"), "utf8"));
+    return [...new Set((cache.models ?? [])
+      .filter((model) => model && typeof model === "object" && model.visibility !== "hide" && model.supported_in_api !== false)
+      .map((model) => model.slug ?? model.model ?? model.id)
+      .filter((model) => typeof model === "string" && model))];
+  } catch {
+    return [];
+  }
+}
+
+async function printCompletionModels(options) {
+  const cachedModels = await readCachedCompletionModels();
+  if (options.completionCachedModels) { writeCompletionModels(cachedModels); return; }
+  const client = new StdioJsonRpcClient(options.codex, () => {}, () => ({ decision: "decline" }), { cwd: options.cwd });
+  const deadline = Date.now() + options.timeout * 1000;
+  const requestBeforeDeadline = async (method, params) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      const error = new Error(`timed out after ${options.timeout} seconds loading available models`);
+      error.exitCode = 124;
+      throw error;
+    }
+    let timer;
+    try {
+      return await Promise.race([
+        client.request(method, params),
+        new Promise((_, reject) => { timer = setTimeout(() => { const error = new Error(`timed out after ${options.timeout} seconds loading available models`); error.exitCode = 124; reject(error); }, remaining); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  try {
+    await requestBeforeDeadline("initialize", {
+      clientInfo: { name: "codex-cli-completion", title: "Codex CLI Bash completion", version: "0.1.0" },
+      capabilities: { experimentalApi: false, requestAttestation: false },
+    });
+    const models = new Set();
+    let cursor;
+    for (let page = 0; page < 20; page += 1) {
+      const response = await requestBeforeDeadline("model/list", { limit: 100, ...(cursor ? { cursor } : {}) });
+      for (const item of response.data ?? []) {
+        const model = item.model ?? item.id;
+        if (typeof model === "string" && model) models.add(model);
+      }
+      cursor = response.nextCursor;
+      if (!cursor) break;
+    }
+    writeCompletionModels([...models]);
+  } catch (error) {
+    if (!cachedModels.length) throw error;
+    writeCompletionModels(cachedModels);
+  } finally {
+    client.close();
+  }
+}
+
+function debug(options, message) {
+  if (options.debug) stderr.write(`codex-cli: debug: ${message}\n`);
+}
+
+function indented(value) {
+  return String(value).split("\n").map((line) => `  ${line}`).join("\n");
+}
+
+function printable(value) {
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+function itemState(item, phase) {
+  if (phase === "started") return "started";
+  return typeof item.status === "string" ? item.status : "completed";
+}
+
+function timing(item) {
+  const details = [];
+  if (item.exitCode !== null && item.exitCode !== undefined) details.push(`exit ${item.exitCode}`);
+  if (item.durationMs !== null && item.durationMs !== undefined) details.push(`${item.durationMs} ms`);
+  return details.length ? ` (${details.join(", ")})` : "";
+}
+
+function formatThreadItem(item, verbosity = "low", phase = "completed") {
+  if (!item || verbosity === "low" || ["agentMessage", "userMessage", "hookPrompt"].includes(item.type)) return undefined;
+  const state = itemState(item, phase);
+  switch (item.type) {
+    case "reasoning": {
+      if (phase === "started") return undefined;
+      const summary = (item.summary ?? []).filter(Boolean);
+      const content = verbosity === "high" ? (item.content ?? []).filter(Boolean) : [];
+      const sections = [...summary, ...content.filter((entry) => !summary.includes(entry))];
+      return sections.length ? `🧠 Reasoning:\n${indented(sections.join("\n"))}` : undefined;
+    }
+    case "plan":
+      return phase === "started" ? undefined : `📋 Plan:\n${indented(item.text ?? "")}`;
+    case "commandExecution": {
+      let result = `⚙️ Command ${state}${timing(item)}: ${item.command}`;
+      if (verbosity === "high" && item.cwd) result += `\n  cwd: ${item.cwd}`;
+      if (verbosity === "high" && item.aggregatedOutput) result += `\n  output:\n${indented(item.aggregatedOutput.replace(/\n$/, ""))}`;
+      return result;
+    }
+    case "fileChange": {
+      const changes = (item.changes ?? []).map((change) => `${change.kind}: ${change.path}`);
+      let result = `📝 File change ${state}${changes.length ? `: ${changes.join(", ")}` : ""}`;
+      if (verbosity === "high") {
+        for (const change of item.changes ?? []) if (change.diff) result += `\n  diff for ${change.path}:\n${indented(change.diff.replace(/\n$/, ""))}`;
+      }
+      return result;
+    }
+    case "mcpToolCall": {
+      let result = `🔌 MCP tool ${state}${timing(item)}: ${item.server}.${item.tool}`;
+      if (verbosity === "high") {
+        result += `\n  arguments:\n${indented(printable(item.arguments))}`;
+        if (item.result !== null && item.result !== undefined) result += `\n  result:\n${indented(printable(item.result))}`;
+        if (item.error) result += `\n  error:\n${indented(printable(item.error))}`;
+      }
+      return result;
+    }
+    case "dynamicToolCall": {
+      const name = [item.namespace, item.tool].filter(Boolean).join(".");
+      let result = `🛠️ Tool ${state}${timing(item)}: ${name}`;
+      if (verbosity === "high") {
+        result += `\n  arguments:\n${indented(printable(item.arguments))}`;
+        if (item.contentItems?.length) result += `\n  output:\n${indented(printable(item.contentItems))}`;
+      }
+      return result;
+    }
+    case "collabAgentToolCall": {
+      const receivers = item.receiverThreadIds?.length ? ` -> ${item.receiverThreadIds.join(", ")}` : "";
+      let result = `🤝 Agent action ${state}: ${item.tool}${receivers}`;
+      if (verbosity === "high" && item.prompt) result += `\n  prompt:\n${indented(item.prompt)}`;
+      if (verbosity === "high" && item.agentsStates && Object.keys(item.agentsStates).length) result += `\n  states:\n${indented(printable(item.agentsStates))}`;
+      return result;
+    }
+    case "subAgentActivity":
+      return `🧵 Subagent ${item.kind}: ${item.agentPath} (${item.agentThreadId})`;
+    case "webSearch":
+      return `🌐 Web search ${state}: ${item.query}`;
+    case "imageView":
+      return `🖼️ Viewed image: ${item.path}`;
+    case "imageGeneration": {
+      let result = `🎨 Image generation ${item.status}${item.savedPath ? `: ${item.savedPath}` : ""}`;
+      if (verbosity === "high" && item.result) result += `\n${indented(item.result)}`;
+      return result;
+    }
+    case "enteredReviewMode":
+      return `🔍 Entered review mode${item.review ? `: ${item.review}` : ""}`;
+    case "exitedReviewMode":
+      return `✅ Exited review mode${item.review ? `: ${item.review}` : ""}`;
+    case "contextCompaction":
+      return "🗜️ Compacted conversation context";
+    case "sleep":
+      return verbosity === "high" ? `⏳ Waited ${item.durationMs} ms` : undefined;
+    default:
+      return verbosity === "high" ? `• Item ${item.type ?? "unknown"}:\n${indented(printable(item))}` : undefined;
+  }
+}
+
+class ProgressSpinner {
+  constructor(enabled, output = stderr) {
+    this.enabled = Boolean(enabled);
+    this.output = output;
+    this.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    this.frame = 0;
+    this.timer = undefined;
+    this.visible = false;
+    this.label = "Codex is working";
+  }
+
+  render() {
+    if (!this.enabled) return;
+    this.output.write(`\r\x1b[2K${this.frames[this.frame++ % this.frames.length]} ${this.label}`);
+    this.visible = true;
+  }
+
+  start(label = "Codex is working") {
+    if (!this.enabled || this.timer) return;
+    this.label = label;
+    this.render();
+    this.timer = setInterval(() => this.render(), 80);
+    this.timer.unref?.();
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    if (this.visible) this.output.write("\r\x1b[2K");
+    this.visible = false;
+  }
+}
+
+function createHumanRenderer(options, progress, output = stdout, diagnostics = stderr) {
+  const streamedAgentItems = new Set();
+  const streamBuffers = new Map();
+  const renderedItems = new Set();
+  const renderedTexts = new Set();
+  const startedItems = new Set();
+  let lastDiagnosticType;
+  const visible = () => progress?.stop();
+  return {
+    agentDelta(itemId, delta = "") {
+      if (options.json || options.agenticErrorCode) return;
+      visible();
+      streamedAgentItems.add(itemId);
+      streamBuffers.set(itemId, `${streamBuffers.get(itemId) ?? ""}${delta}`);
+      output.write(delta);
+    },
+    item(item, phase = "completed") {
+      if (options.json) return;
+      if (!item) return;
+      if (item.type === "agentMessage") {
+        if (options.agenticErrorCode) return;
+        if (phase === "started" || renderedItems.has(item.id) || streamedAgentItems.has(item.id) || renderedTexts.has(item.text) || [...streamBuffers.values()].includes(item.text)) return;
+        visible();
+        renderedItems.add(item.id);
+        renderedTexts.add(item.text);
+        output.write(item.text ?? "");
+        return;
+      }
+      const keys = phase === "started" ? startedItems : renderedItems;
+      if (keys.has(item.id)) return;
+      const formatted = formatThreadItem(item, options.verbosity, phase);
+      if (!formatted) return;
+      visible();
+      keys.add(item.id);
+      const separator = lastDiagnosticType && lastDiagnosticType !== item.type ? "\n" : "";
+      lastDiagnosticType = item.type;
+      diagnostics.write(`${separator}${formatted.split("\n").map((line, index) => index === 0 ? `codex-cli: ${line}` : line).join("\n")}\n`);
+    },
+  };
+}
+
+async function logApproval(options, request, decision) {
+  if (!options.approvalLog) return;
+  const quote = (value) => JSON.stringify(value ?? "");
+  const entry = [
+    "[[approval]]",
+    `timestamp = ${quote(new Date().toISOString())}`,
+    `thread_id = ${quote(request.params.threadId)}`,
+    `turn_id = ${quote(request.params.turnId)}`,
+    `method = ${quote(request.method)}`,
+    `command = ${quote(request.params.command)}`,
+    `decision = ${quote(decision)}`,
+    "",
+  ].join("\n");
+  try {
+    await mkdir(path.dirname(options.approvalLog), { recursive: true });
+    await appendFile(options.approvalLog, entry, { encoding: "utf8", mode: 0o600 });
+  } catch (error) {
+    stderr.write(`codex-cli: could not write approval log at ${options.approvalLog}: ${error.message}\n`);
+  }
+}
+
+async function approvalResult(options, request) {
+  debug(options, `received ${request.method} for turn ${request.params.turnId ?? "unknown"}`);
+  let result;
+  if (options.direct && options.interactive) {
+    if (!stdin.isTTY) throw new Error("cannot answer an approval request because standard input is not a terminal");
+    const prompt = createInterface({ input: stdin, output: stderr });
+    try {
+      const answer = await prompt.question(`codex-cli: approve ${request.params.command ?? "this command"}? [y/N] `);
+      result = { decision: /^y(es)?$/i.test(answer.trim()) ? "accept" : "decline" };
+    } finally {
+      prompt.close();
+    }
+  } else {
+    if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify(request)}\n`);
+    else {
+      const command = request.params.command ?? "command";
+      stderr.write(`codex-cli: approval requested for ${command}; ${options.approval}\n`);
+    }
+    result = { decision: options.approval === "accept-for-session" ? "acceptForSession" : options.approval };
+  }
+  await logApproval(options, request, result.decision);
+  return result;
+}
+
+async function userInputResult(options, request) {
+  if (!options.interactive) throw new Error("Codex requested user input; rerun with --interactive to answer it in the terminal");
+  if (!stdin.isTTY) throw new Error("cannot answer Codex user input because standard input is not a terminal");
+  debug(options, `received ${request.method} for turn ${request.params.turnId ?? "unknown"}`);
+  const prompt = createInterface({ input: stdin, output: stderr });
+  try {
+    const answers = {};
+    for (const question of request.params.questions) {
+      stderr.write(`codex-cli: ${question.header}: ${question.question}\n`);
+      if (question.options?.length) stderr.write(`${question.options.map((option, index) => `  ${index + 1}. ${option.label} — ${option.description}`).join("\n")}\n`);
+      const value = await prompt.question("Answer: ");
+      const selected = question.options?.[Number(value) - 1]?.label;
+      answers[question.id] = { answers: [selected ?? value] };
+    }
+    return { answers };
+  } finally {
+    prompt.close();
+  }
+}
+
+function serverRequestResult(options, request) {
+  if (request.method === "item/commandExecution/requestApproval") return approvalResult(options, request);
+  if (request.method === "item/tool/requestUserInput") return userInputResult(options, request);
+  debug(options, `declining unsupported app-server request: ${request.method}`);
+  if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify(request)}\n`);
+  else stderr.write(`codex-cli: unsupported app-server request ${request.method}; decline\n`);
+  return { decision: "decline" };
+}
+
+const BROKER_VERSION = 1;
+const BROKER_CAPABILITIES = ["agentic-result-v1"];
+const BROKER_MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
+const BROKER_START_TIMEOUT_MS = 60000;
+
+function resolveBrokerPaths(options) {
+  const socketPath = path.resolve(options.cwd, options.brokerSocket ?? ".codex-cli/codex-cli-broker.sock");
+  const pidPath = socketPath.endsWith(".sock") ? `${socketPath.slice(0, -5)}.pid` : `${socketPath}.pid`;
+  return { socketPath, pidPath };
+}
+
+async function unlinkIfPresent(filePath) {
+  try { await unlink(filePath); } catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+
+async function readBrokerMetadata(pidPath) {
+  try { return JSON.parse(await readFile(pidPath, "utf8")); } catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
+}
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+}
+
+function sendBrokerMessage(socket, message) {
+  if (!socket.destroyed) socket.write(`${JSON.stringify({ version: BROKER_VERSION, ...message })}\n`);
+}
+
+class JsonLinePeer {
+  constructor(socket, onMessage) {
+    this.socket = socket;
+    this.buffer = "";
+    this.onMessage = onMessage;
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => this.receive(chunk));
+  }
+
+  receive(chunk) {
+    this.buffer += chunk;
+    if (Buffer.byteLength(this.buffer) > BROKER_MAX_MESSAGE_BYTES) {
+      sendBrokerMessage(this.socket, { type: "error", code: "MESSAGE_TOO_LARGE", exitCode: 2, message: "broker message exceeds 4 MiB" });
+      this.socket.destroy();
+      return;
+    }
+    for (;;) {
+      const newline = this.buffer.indexOf("\n");
+      if (newline === -1) return;
+      const line = this.buffer.slice(0, newline);
+      this.buffer = this.buffer.slice(newline + 1);
+      if (!line.trim()) continue;
+      let message;
+      try { message = JSON.parse(line); } catch {
+        sendBrokerMessage(this.socket, { type: "error", code: "INVALID_JSON", exitCode: 2, message: "invalid broker JSON" });
+        this.socket.destroy();
+        return;
+      }
+      Promise.resolve(this.onMessage(message)).catch((error) => {
+        sendBrokerMessage(this.socket, { type: "error", code: "BROKER_ERROR", exitCode: error.exitCode ?? 2, message: error.message });
+      });
+    }
+  }
+
+  send(message) { sendBrokerMessage(this.socket, message); }
+  close() { this.socket.end(); }
+}
+
+function brokerControl(socketPath, message, timeoutMs = 2000) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) reject(error); else resolve(value);
+    };
+    const timer = setTimeout(() => finish(new Error("broker did not respond")), timeoutMs);
+    socket.once("error", (error) => finish(error));
+    new JsonLinePeer(socket, (response) => finish(undefined, response));
+    socket.once("connect", () => sendBrokerMessage(socket, message));
+  });
+}
+
+async function probeBroker(socketPath) {
+  try {
+    const response = await brokerControl(socketPath, { type: "status" }, 500);
+    return response.type === "status" && response.ready ? response : undefined;
+  } catch { return undefined; }
+}
+
+async function startBroker(options) {
+  const { socketPath, pidPath } = resolveBrokerPaths(options);
+  const running = await probeBroker(socketPath);
+  if (running) {
+    if (options.experimentalApi && !running.experimentalApi) throw new Error("broker is already running without --experimental-api; stop it before restarting with experimental API support");
+    stderr.write(`codex-cli: broker already running (pid ${running.pid})\n`);
+    return;
+  }
+  const metadata = await readBrokerMetadata(pidPath);
+  if (metadata && processIsAlive(metadata.pid)) throw new Error(`broker metadata points to live pid ${metadata.pid}, but ${socketPath} is unavailable; refusing to remove it`);
+  let socketInfo;
+  try { socketInfo = await lstat(socketPath); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (socketInfo && !socketInfo.isSocket()) throw new Error(`refusing to remove non-socket broker path: ${socketPath}`);
+  if (socketInfo && !metadata) throw new Error(`stale broker socket has no ownership metadata: ${socketPath}; remove it manually after verifying it is unused`);
+  if (socketInfo) await unlinkIfPresent(socketPath);
+  if (metadata) await unlinkIfPresent(pidPath);
+  await mkdir(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+  if (Buffer.byteLength(socketPath) > 100) throw new Error(`broker socket path is too long for a Unix socket: ${socketPath}; use --broker-socket with a shorter path`);
+  const args = [path.resolve(process.argv[1]), "--broker-serve", "--cwd", options.cwd, "--broker-socket", socketPath, "--codex", options.codex];
+  if (options.experimentalApi) args.push("--experimental-api");
+  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: options.cwd });
+  child.unref();
+  const deadline = Date.now() + BROKER_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const status = await probeBroker(socketPath);
+    if (status) { stderr.write(`codex-cli: broker started (pid ${status.pid}, socket ${socketPath})\n`); return; }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`broker failed to become ready within ${BROKER_START_TIMEOUT_MS / 1000} seconds`);
+}
+
+async function statusBroker(options) {
+  const { socketPath } = resolveBrokerPaths(options);
+  const status = await probeBroker(socketPath);
+  if (!status) { stderr.write(`codex-cli: broker is not running (${socketPath})\n`); process.exitCode = 1; return; }
+  stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+}
+
+async function stopBroker(options) {
+  const { socketPath } = resolveBrokerPaths(options);
+  const status = await probeBroker(socketPath);
+  if (!status) { stderr.write("codex-cli: broker is not running\n"); return; }
+  const response = await brokerControl(socketPath, { type: "stop", instanceId: status.instanceId });
+  if (response.type === "error") throw new Error(response.message);
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline && await probeBroker(socketPath)) await new Promise((resolve) => setTimeout(resolve, 50));
+  if (await probeBroker(socketPath)) throw new Error("broker did not stop within 3 seconds");
+  stderr.write("codex-cli: broker stopped\n");
+}
+
+function threadListLabel(thread) {
+  const text = thread.name || thread.preview || "";
+  return text.replace(/\s+/g, " ").trim().slice(0, 96);
+}
+
+function formatThreadListRow(thread) {
+  const createdAt = thread.createdAt ? new Date(thread.createdAt * 1000).toISOString() : "-";
+  const updatedAt = thread.updatedAt ? new Date(thread.updatedAt * 1000).toISOString() : "-";
+  const status = thread.status?.type ?? thread.status ?? "-";
+  return `${thread.id}\t${status}\t${thread.archived ? "archived" : "active"}\t${createdAt}\t${updatedAt}\t${thread.cwd ?? "-"}\t${threadListLabel(thread)}`;
+}
+
+async function listBrokerThreads(options) {
+  const { socketPath } = resolveBrokerPaths(options);
+  if (!await probeBroker(socketPath)) throw new Error(`broker is not running; start it with: node ${process.argv[1]} --broker start`);
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let finished = false;
+    const finish = (error) => {
+      if (finished) return;
+      finished = true;
+      socket.destroy();
+      if (error) reject(error); else resolve();
+    };
+    socket.once("error", finish);
+    socket.once("close", () => { if (!finished) finish(new Error("broker connection closed before thread listing completed")); });
+    socket.once("connect", () => {
+      if (!options.json) stdout.write("ID\tSTATUS\tARCHIVED\tCREATED\tUPDATED\tCWD\tTITLE\n");
+      sendBrokerMessage(socket, { type: "threads" });
+    });
+    new JsonLinePeer(socket, (message) => {
+      if (message.type === "thread-list-item") {
+        stdout.write(options.json ? `${JSON.stringify(message.thread)}\n` : `${formatThreadListRow(message.thread)}\n`);
+      } else if (message.type === "threads-completed") finish();
+      else if (message.type === "error") {
+        const error = new Error(message.message ?? "broker failed to list threads");
+        error.exitCode = message.exitCode ?? 2;
+        finish(error);
+      }
+    });
+  });
+}
+
+function validateBrokerRun(request, workspace) {
+  if (request.version !== BROKER_VERSION || request.type !== "run") throw new Error("unsupported broker protocol message");
+  if (path.resolve(request.cwd ?? "") !== workspace) throw new Error("broker request cwd does not match the broker workspace");
+  if (typeof request.prompt !== "string" || !request.prompt.trim()) throw new Error("broker prompt is required");
+  if (!["decline", "accept", "accept-for-session"].includes(request.approval)) throw new Error("invalid broker approval mode");
+  if (!Number.isFinite(request.timeout) || request.timeout <= 0 || request.timeout > 86400) throw new Error("broker timeout must be between 0 and 86400 seconds");
+  if (!request.new && typeof request.threadId !== "string") throw new Error("broker request requires a threadId or new=true");
+  if (request.autoNewOnStale !== undefined && typeof request.autoNewOnStale !== "boolean") throw new Error("broker autoNewOnStale must be a boolean");
+  if (request.resumeActiveTurn !== undefined && typeof request.resumeActiveTurn !== "boolean") throw new Error("broker resumeActiveTurn must be a boolean");
+  if (request.debug !== undefined && typeof request.debug !== "boolean") throw new Error("broker debug must be a boolean");
+  if (request.agenticErrorCode !== undefined && typeof request.agenticErrorCode !== "boolean") throw new Error("broker agenticErrorCode must be a boolean");
+  if (request.verbosity !== undefined && !["low", "medium", "high"].includes(request.verbosity)) throw new Error("broker verbosity must be low, medium, or high");
+  if (request.threadParamsSpecified !== undefined && typeof request.threadParamsSpecified !== "boolean") throw new Error("broker threadParamsSpecified must be a boolean");
+  if (request.threadParams !== undefined && !isJsonObject(request.threadParams)) throw new Error("broker threadParams must be a JSON object");
+  if (request.turnParams !== undefined && !isJsonObject(request.turnParams)) throw new Error("broker turnParams must be a JSON object");
+  rejectManagedParams("--thread-params", request.threadParams ?? {}, ["cwd"]);
+  rejectManagedParams("--turn-params", request.turnParams ?? {}, ["threadId", "cwd", "input", ...(request.agenticErrorCode ? ["outputSchema"] : [])]);
+  normalizeSandboxParams(request);
+  if (!request.new && (request.threadParamsSpecified || Object.keys(request.threadParams ?? {}).length)) throw new Error("--config-json and --thread-params apply only when creating a thread with --new");
+}
+
+function staleBrokerThreadError(threadId) {
+  const error = new Error(`thread not found in this broker instance: ${threadId}; use --new`);
+  error.code = "STALE_THREAD";
+  return error;
+}
+
+function turnPromptText(turn) {
+  const message = turn.items?.find((item) => item.type === "userMessage");
+  if (!message) return undefined;
+  return (message.content ?? []).filter((input) => input.type === "text").map((input) => input.text).join("");
+}
+
+function threadIsNotLoaded(response) {
+  return response?.thread?.status?.type === "notLoaded";
+}
+
+function jsonRpcResponseError(error) {
+  if (!error || typeof error !== "object") return new Error(String(error ?? "unknown JSON-RPC error"));
+  const details = [];
+  if (error.code !== undefined) details.push(`JSON-RPC code ${error.code}`);
+  if (error.data !== undefined) details.push(`data: ${printable(error.data)}`);
+  return new Error(`${error.message ?? "JSON-RPC request failed"}${details.length ? ` (${details.join("; ")})` : ""}`);
+}
+
+function codexErrorInfoDetails(info) {
+  if (typeof info === "string" && info.trim()) return info;
+  if (!isJsonObject(info)) return undefined;
+  const entries = Object.entries(info);
+  if (entries.length !== 1) return printable(info);
+  const [kind, metadata] = entries[0];
+  const httpStatusCode = isJsonObject(metadata) ? metadata.httpStatusCode : undefined;
+  return `${kind}${httpStatusCode !== undefined && httpStatusCode !== null ? ` (HTTP ${httpStatusCode})` : ""}`;
+}
+
+function turnErrorDetails(error) {
+  if (!error || typeof error !== "object") return typeof error === "string" && error.trim() ? error : undefined;
+  const values = [error.message, error.additionalDetails, codexErrorInfoDetails(error.codexErrorInfo)]
+    .filter((value) => typeof value === "string" && value.trim());
+  return [...new Set(values)].join(" — ") || printable(error);
+}
+
+const CORRECTABLE_HTTP_STATUSES = new Set([408, 409, 421, 425, 429]);
+const DEFINITIVE_SERVER_HTTP_STATUSES = new Set([501, 505]);
+const DEFINITIVE_CODEX_ERROR_KINDS = new Set([
+  "authenticationrequired",
+  "badrequest",
+  "forbidden",
+  "invalidapikey",
+  "invalidauthentication",
+  "invalidrequest",
+  "modelnotfound",
+  "notfound",
+  "permissiondenied",
+  "unauthorized",
+  "unprocessableentity",
+  "unsupported",
+]);
+
+function codexErrorMetadata(error) {
+  const statuses = new Set();
+  const kinds = new Set();
+  const seen = new Set();
+  const addStatus = (value) => {
+    const status = Number(value);
+    if (Number.isInteger(status) && status >= 100 && status <= 599) statuses.add(status);
+  };
+  const inspectText = (value, kind = false) => {
+    if (typeof value !== "string") return;
+    if (kind) kinds.add(value.replaceAll(/[^a-z0-9]/gi, "").toLowerCase());
+    for (const match of value.matchAll(/\b(?:http(?:\s+status)?|status(?:\s+code)?)\s*[:=]?\s*(\d{3})\b/gi)) addStatus(match[1]);
+  };
+  const inspect = (value) => {
+    if (typeof value === "string") { inspectText(value, true); return; }
+    if (!value || typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
+    for (const [key, nested] of Object.entries(value)) {
+      const normalizedKey = key.replaceAll(/[^a-z0-9]/gi, "").toLowerCase();
+      if (["httpstatus", "httpstatuscode", "statuscode"].includes(normalizedKey)) addStatus(nested);
+      else kinds.add(normalizedKey);
+      inspect(nested);
+    }
+  };
+  if (typeof error === "string") inspectText(error);
+  else if (error && typeof error === "object") {
+    inspectText(error.message);
+    inspectText(error.additionalDetails);
+    inspect(error.codexErrorInfo);
+  }
+  return { statuses, kinds };
+}
+
+function codexErrorIsDefinitive(error) {
+  const { statuses, kinds } = codexErrorMetadata(error);
+  if ([...statuses].some((status) => (
+    (status >= 400 && status < 500 && !CORRECTABLE_HTTP_STATUSES.has(status)) ||
+    DEFINITIVE_SERVER_HTTP_STATUSES.has(status)
+  ))) return true;
+  return [...kinds].some((kind) => DEFINITIVE_CODEX_ERROR_KINDS.has(kind));
+}
+
+function classifyCodexError(error, upstreamWillRetry) {
+  const retrySuppressed = upstreamWillRetry === true && codexErrorIsDefinitive(error);
+  const willRetry = upstreamWillRetry === true && !retrySuppressed;
+  return {
+    classification: willRetry ? "correctable" : "definitive",
+    retrySuppressed,
+    willRetry,
+  };
+}
+
+function codexErrorHeading(notification) {
+  const action = notification.willRetry ? "will retry" : notification.retrySuppressed ? "retry suppressed" : "";
+  return `Codex ${notification.classification} error${action ? ` (${action})` : ""}`;
+}
+
+function codexErrorNotification(event) {
+  if (event?.method !== "error") return undefined;
+  const params = isJsonObject(event.params) ? event.params : {};
+  let error = params.turn?.error ?? params.error;
+  if (error === undefined || error === null) {
+    const details = Object.fromEntries(Object.entries(params)
+      .filter(([key]) => !["threadId", "turnId", "willRetry"].includes(key)));
+    if (Object.keys(details).length) error = details;
+  }
+  const message = turnErrorDetails(error) ?? "Codex reported an error without details";
+  const classification = classifyCodexError(error ?? message, params.willRetry);
+  return {
+    error: error ?? message,
+    message,
+    ...classification,
+  };
+}
+
+function systemError(fallbackError) {
+  const details = turnErrorDetails(fallbackError);
+  return Object.assign(new Error(details ? `Codex thread entered systemError: ${details}` : "Codex thread entered systemError without error details"), { keepTurn: true });
+}
+
+function terminalCodexError(error) {
+  const details = turnErrorDetails(error);
+  return Object.assign(new Error(details ? `Codex reported a terminal error: ${details}` : "Codex reported a terminal error without details"), { keepTurn: true });
+}
+
+function interruptedTurnError(turn, fallbackError) {
+  const details = turnErrorDetails(turn?.error) ?? turnErrorDetails(fallbackError);
+  // `interrupted` is already a terminal server state. In particular, do not
+  // send a second turn/interrupt from broker cleanup: the app-server can
+  // briefly report an out-of-date terminal status while the turn is still
+  // settling, and a second interrupt would cancel that live turn.
+  return Object.assign(new Error(details ? `Codex turn was interrupted: ${details}` : "Codex turn was interrupted (the app-server did not provide a reason)"), { exitCode: 130, keepTurn: true });
+}
+
+async function serveBroker(options) {
+  process.umask(0o077);
+  const workspace = path.resolve(options.cwd);
+  const { socketPath, pidPath } = resolveBrokerPaths(options);
+  const instanceId = randomBytes(16).toString("hex");
+  let active;
+  let shuttingDown = false;
+  let appHealthy = true;
+  const knownThreads = new Set();
+  const activeTurnPrompts = new Map();
+  const app = new StdioJsonRpcClient(options.codex, (event) => {
+    if (!active) return;
+    const eventThread = event.params?.threadId ?? event.params?.turn?.threadId;
+    const eventTurn = event.params?.turnId ?? event.params?.turn?.id;
+    if (eventThread && active.threadId && eventThread !== active.threadId) return;
+    if (eventTurn && active.turnId && eventTurn !== active.turnId) return;
+    const eventError = event.params?.turn?.error ?? event.params?.error;
+    if (eventError !== undefined && eventError !== null) active.lastTurnError = eventError;
+    const notification = codexErrorNotification(event);
+    if (notification) {
+      active.lastTurnError = notification.error;
+      if (!notification.willRetry) {
+        active.terminalTurnError = notification.error;
+        active.terminalTurnRequiresInterrupt = notification.retrySuppressed;
+      }
+      active.peer.send({
+        type: "codex-error",
+        message: notification.message,
+        classification: notification.classification,
+        retrySuppressed: notification.retrySuppressed,
+        willRetry: notification.willRetry,
+      });
+    }
+    if (active.request.debug && !active.request.json && event.method.startsWith("turn/")) active.peer.send({ type: "debug", message: `received ${event.method}: ${JSON.stringify(event.params ?? {})}` });
+    if (active.request.json) active.peer.send({ type: "event", event });
+    else if (event.method === "item/agentMessage/delta") {
+      active.streamedItems.add(event.params.itemId);
+      active.streamBuffers.set(event.params.itemId, `${active.streamBuffers.get(event.params.itemId) ?? ""}${event.params.delta ?? ""}`);
+      active.peer.send({ type: "delta", itemId: event.params.itemId, delta: event.params.delta });
+    } else if (event.method === "item/started") {
+      if ((active.request.verbosity ?? "low") !== "low") active.peer.send({ type: "item", phase: "started", item: event.params.item });
+    } else if (event.method === "item/completed") {
+      const item = event.params.item;
+      const alreadyStreamed = item?.text && [...active.streamBuffers.values()].includes(item.text);
+      if (item?.type === "agentMessage" && !alreadyStreamed && !active.streamedItems.has(item.id) && !active.renderedItems.has(item.id) && !active.renderedTexts.has(item.text)) {
+        active.renderedItems.add(item.id);
+        active.renderedTexts.add(item.text);
+        active.peer.send({ type: "delta", itemId: item.id, delta: item.text });
+      } else if (item?.type !== "agentMessage" && !active.renderedItems.has(item?.id)) {
+        active.renderedItems.add(item.id);
+        active.peer.send({ type: "item", phase: "completed", item });
+      }
+    }
+  }, async (request) => {
+    if (request.method === "item/tool/requestUserInput") {
+      if (!active || request.params?.threadId !== active.threadId || request.params?.turnId !== active.turnId || !active.request.interactive || active.pendingUserInput) return { answers: {} };
+      const requestId = randomBytes(16).toString("hex");
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => { if (active.pendingUserInput?.requestId === requestId) active.pendingUserInput = undefined; resolve({ answers: {} }); }, Math.min(active.request.timeout * 1000, 60000));
+        active.pendingUserInput = { requestId, resolve: (value) => { clearTimeout(timer); active.pendingUserInput = undefined; resolve(value); } };
+        active.peer.send({ type: "user-input", requestId, questions: request.params.questions });
+      });
+    }
+    if (!active || request.params?.threadId !== active.threadId || request.params?.turnId !== active.turnId) return { decision: "decline" };
+    if (request.method !== "item/commandExecution/requestApproval") {
+      if (active.request.json) active.peer.send({ type: "event", event: { method: "warning", params: { message: `unsupported app-server request ${request.method}; declined` } } });
+      else active.peer.send({ type: "approval-handled", command: request.params?.command ?? request.method, reason: `unsupported app-server request ${request.method}`, decision: "decline" });
+      return { decision: "decline" };
+    }
+    let decision;
+    if (active.request.interactive) {
+      if (active.pendingApproval) return { decision: "decline" };
+      const requestId = randomBytes(16).toString("hex");
+      decision = await new Promise((resolve) => {
+        const timer = setTimeout(() => { if (active.pendingApproval?.requestId === requestId) active.pendingApproval = undefined; resolve("decline"); }, Math.min(active.request.timeout * 1000, 60000));
+        active.pendingApproval = { requestId, resolve: (value) => { clearTimeout(timer); active.pendingApproval = undefined; resolve(value); } };
+        active.peer.send({ type: "approval", requestId, command: request.params.command, reason: request.params.reason });
+      });
+    } else {
+      decision = active.request.approval === "accept-for-session" ? "acceptForSession" : active.request.approval;
+      active.peer.send({ type: "approval-handled", command: request.params.command, reason: request.params.reason, decision });
+    }
+    await logApproval({ approvalLog: active.request.approvalLog }, request, decision);
+    return { decision };
+  });
+  await app.request("initialize", { clientInfo: { name: "codex-cli-broker", title: "Codex CLI broker", version: "0.1.0" }, capabilities: { experimentalApi: options.experimentalApi, requestAttestation: false } });
+
+  const listThreads = async (peer) => {
+    const sourceKinds = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"];
+    const threads = [];
+    for (const archived of [false, true]) {
+      let cursor = null;
+      do {
+        const response = await app.request("thread/list", { cursor, limit: 100, sortKey: "created_at", sortDirection: "asc", sourceKinds, archived });
+        for (const thread of response.data ?? []) threads.push({ ...thread, archived });
+        cursor = response.nextCursor ?? null;
+      } while (cursor);
+    }
+    threads.sort((left, right) => (left.createdAt ?? 0) - (right.createdAt ?? 0) || String(left.id).localeCompare(String(right.id)));
+    for (const thread of threads) peer.send({ type: "thread-list-item", thread });
+    peer.send({ type: "threads-completed" });
+  };
+
+  const interruptTurnAndWait = async (threadId, turnId, timeoutMs = 5000) => {
+    await app.request("turn/interrupt", { threadId, turnId });
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const history = await app.request("thread/read", { threadId, includeTurns: true });
+      const turn = history.thread.turns.find((candidate) => candidate.id === turnId);
+      if (!turn || turn.status !== "inProgress") return;
+      if (Date.now() >= deadline) {
+        const error = new Error(`interruption of active turn ${turnId} did not settle within ${timeoutMs / 1000} seconds`);
+        error.exitCode = 124;
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
+
+  const interruptActive = async (message) => {
+    const run = active;
+    if (!run) return;
+    run.pendingApproval?.resolve("decline");
+    run.pendingUserInput?.resolve({ answers: {} });
+    if (appHealthy && run.threadId && run.turnId) {
+      try { await interruptTurnAndWait(run.threadId, run.turnId); } catch { /* Best effort during cleanup. */ }
+    }
+    if (message) run.peer.send({ type: "error", code: "INTERRUPTED", exitCode: 130, message });
+  };
+
+  const executeRun = async (run) => {
+    const request = run.request;
+    try {
+      let threadId = request.threadId;
+      let createdThread = Boolean(request.new);
+      const startThread = async () => {
+        const threadStartParams = { cwd: workspace, ephemeral: false, ...(request.threadParams ?? {}) };
+        if (Object.hasOwn(request, "model")) threadStartParams.model = request.model;
+        const response = await app.request("thread/start", threadStartParams);
+        threadId = response.thread.id;
+        knownThreads.add(threadId);
+        run.threadId = threadId;
+      };
+      const resumeThread = async () => {
+        const resumeParams = { threadId, cwd: workspace };
+        if (Object.hasOwn(request, "model")) resumeParams.model = request.model;
+        const response = await app.request("thread/resume", resumeParams);
+        threadId = response.thread.id;
+        knownThreads.add(threadId);
+        run.threadId = threadId;
+        return response;
+      };
+      if (createdThread) {
+        await startThread();
+      } else {
+        try {
+          const response = await app.request("thread/read", { threadId, includeTurns: true });
+          if (threadIsNotLoaded(response)) {
+            if (!request.autoNewOnStale) await resumeThread();
+            else {
+              createdThread = true;
+              await startThread();
+            }
+          }
+        }
+        catch (error) {
+          if (!request.autoNewOnStale) {
+            try { await resumeThread(); }
+            catch { throw staleBrokerThreadError(threadId); }
+          } else {
+            createdThread = true;
+            await startThread();
+          }
+        }
+      }
+      run.threadId = threadId;
+      const before = createdThread ? undefined : await (async () => {
+        try {
+          const response = await app.request("thread/read", { threadId, includeTurns: true });
+          return threadIsNotLoaded(response) && !request.autoNewOnStale ? resumeThread() : response;
+        }
+        catch {
+          if (request.autoNewOnStale) throw staleBrokerThreadError(threadId);
+          return resumeThread();
+        }
+      })();
+      const pending = before?.thread.turns.filter((turn) => turn.status === "inProgress") ?? [];
+      const matchingTurn = pending.find((turn) => activeTurnPrompts.get(turn.id) === request.prompt || turnPromptText(turn) === request.prompt) ?? (request.resumeActiveTurn && pending.length === 1 ? pending[0] : undefined);
+      if (pending.length && !matchingTurn && !request.interruptPending) throw new Error(`thread has active turn ${pending.map((turn) => turn.id).join(", ")}; use --interrupt-pending`);
+      if (!matchingTurn) for (const turn of pending) {
+        await interruptTurnAndWait(threadId, turn.id);
+        activeTurnPrompts.delete(turn.id);
+      }
+      let started;
+      if (!matchingTurn) {
+        const turnStartParams = {
+          ...(request.turnParams ?? {}),
+          ...(request.agenticErrorCode ? { outputSchema: AGENTIC_RESULT_SCHEMA } : {}),
+          threadId,
+          cwd: workspace,
+          input: [{ type: "text", text: request.prompt, text_elements: [] }],
+        };
+        if (Object.hasOwn(request, "model")) turnStartParams.model = request.model;
+        try { started = await app.request("turn/start", turnStartParams); }
+        catch (error) {
+          if (!createdThread && request.autoNewOnStale && /thread not found/i.test(error.message)) {
+            createdThread = true;
+            await startThread();
+            turnStartParams.threadId = threadId;
+            started = await app.request("turn/start", turnStartParams);
+          } else if (!createdThread && /thread not found/i.test(error.message)) throw staleBrokerThreadError(threadId);
+          else throw error;
+        }
+      }
+      run.turnId = matchingTurn?.id ?? started.turn.id;
+      if (!matchingTurn) activeTurnPrompts.set(run.turnId, request.prompt);
+      run.peer.send({ type: "thread", threadId, instanceId, created: createdThread });
+      const deadline = Date.now() + request.timeout * 1000;
+      let interruptedReads = 0;
+      let lastObservedStatus;
+      for (;;) {
+        if (run.disconnected) throw Object.assign(new Error("broker client disconnected"), { exitCode: 130, keepTurn: true });
+        const history = await app.request("thread/read", { threadId, includeTurns: true });
+        const turn = history.thread.turns.find((candidate) => candidate.id === run.turnId);
+        const observedStatus = turn?.status ?? "not found";
+        if (request.debug && !request.json && observedStatus !== lastObservedStatus) {
+          run.peer.send({ type: "debug", message: `thread/read turn ${run.turnId} status: ${observedStatus}${turnErrorDetails(turn?.error) ? ` (${turnErrorDetails(turn.error)})` : ""}` });
+          lastObservedStatus = observedStatus;
+        }
+        if (history.thread.status?.type === "systemError") {
+          activeTurnPrompts.delete(run.turnId);
+          throw systemError(turn?.error ?? run.lastTurnError);
+        }
+        if (run.terminalTurnError) {
+          activeTurnPrompts.delete(run.turnId);
+          const error = terminalCodexError(run.terminalTurnError);
+          error.cancelTurn = run.terminalTurnRequiresInterrupt;
+          throw error;
+        }
+        if (turn?.status === "completed") {
+          for (const item of request.json ? [] : (turn.items ?? [])) {
+            const alreadyStreamed = item.text && [...run.streamBuffers.values()].includes(item.text);
+            if (item.type === "agentMessage" && !alreadyStreamed && !run.streamedItems.has(item.id) && !run.renderedItems.has(item.id) && !run.renderedTexts.has(item.text)) {
+              run.renderedItems.add(item.id);
+              run.renderedTexts.add(item.text);
+              run.peer.send({ type: "delta", itemId: item.id, delta: item.text });
+            } else if (item.type !== "agentMessage" && !run.renderedItems.has(item.id)) {
+              run.renderedItems.add(item.id);
+              run.peer.send({ type: "item", phase: "completed", item });
+            }
+          }
+          activeTurnPrompts.delete(run.turnId);
+          run.peer.send({
+            type: "completed",
+            threadId,
+            turnId: run.turnId,
+            ...(request.agenticErrorCode ? { finalMessage: finalAgentMessage(turn) } : {}),
+          });
+          return;
+        }
+        if (turn?.status === "failed") {
+          activeTurnPrompts.delete(run.turnId);
+          throw Object.assign(new Error(turnErrorDetails(turn.error) ?? "Codex turn failed"), { keepTurn: true });
+        }
+        if (turn?.status === "interrupted") {
+          // App-server thread reads can temporarily lag turn events. Require
+          // three matching reads before treating an interruption as final.
+          interruptedReads += 1;
+          if (interruptedReads >= 3) {
+            activeTurnPrompts.delete(run.turnId);
+            throw interruptedTurnError(turn, run.lastTurnError);
+          }
+        } else {
+          interruptedReads = 0;
+        }
+        if (Date.now() >= deadline) throw Object.assign(new Error(`timed out after ${request.timeout} seconds`), { exitCode: 124, keepTurn: true });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    } catch (error) {
+      if (!error.keepTurn || error.cancelTurn) await interruptActive();
+      if (!run.disconnected) run.peer.send({ type: "error", code: error.code ?? "TURN_FAILED", exitCode: error.exitCode ?? 2, message: error.message });
+    } finally {
+      run.pendingApproval?.resolve("decline");
+      run.pendingUserInput?.resolve({ answers: {} });
+      if (active === run) active = undefined;
+      if (!run.peer.socket.destroyed) run.peer.close();
+    }
+  };
+
+  let server;
+  const cleanup = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await interruptActive("broker is stopping");
+    await new Promise((resolve) => server.close(resolve));
+    app.close();
+    const metadata = await readBrokerMetadata(pidPath).catch(() => undefined);
+    if (metadata?.instanceId === instanceId) { await unlinkIfPresent(socketPath); await unlinkIfPresent(pidPath); }
+  };
+  app.child.once("exit", () => {
+    appHealthy = false;
+    if (shuttingDown) return;
+    active?.pendingApproval?.resolve("decline");
+    active?.pendingUserInput?.resolve({ answers: {} });
+    active?.peer.send({ type: "error", code: "APP_SERVER_EXITED", exitCode: 2, message: "broker app-server exited unexpectedly; restart the broker" });
+    setTimeout(() => cleanup().then(() => process.exit(2)), 20);
+  });
+
+  server = net.createServer((socket) => {
+    let peer;
+    peer = new JsonLinePeer(socket, async (message) => {
+      if (message.version !== BROKER_VERSION) { peer.send({ type: "error", code: "VERSION", exitCode: 2, message: "unsupported broker protocol version" }); return peer.close(); }
+      if (message.type === "status") { peer.send({ type: "status", ready: appHealthy, pid: process.pid, instanceId, socketPath, active: Boolean(active), experimentalApi: options.experimentalApi, capabilities: BROKER_CAPABILITIES }); return peer.close(); }
+      if (message.type === "threads") {
+        try { await listThreads(peer); }
+        catch (error) { peer.send({ type: "error", code: "THREAD_LIST_FAILED", exitCode: error.exitCode ?? 2, message: error.message }); }
+        return peer.close();
+      }
+      if (message.type === "stop") {
+        if (message.instanceId !== instanceId) { peer.send({ type: "error", code: "INSTANCE", exitCode: 2, message: "broker instance mismatch" }); return peer.close(); }
+        peer.send({ type: "stopped" }); peer.close(); setTimeout(() => cleanup().then(() => process.exit(0)), 20); return;
+      }
+      if (message.type === "approval-response") {
+        if (!active || active.peer !== peer || active.pendingApproval?.requestId !== message.requestId) return peer.send({ type: "error", code: "APPROVAL_ID", exitCode: 2, message: "approval response does not match the active request" });
+        const decision = ["accept", "decline", "acceptForSession"].includes(message.decision) ? message.decision : "decline";
+        active.pendingApproval.resolve(decision); return;
+      }
+      if (message.type === "user-input-response") {
+        if (!active || active.peer !== peer || active.pendingUserInput?.requestId !== message.requestId) return peer.send({ type: "error", code: "USER_INPUT_ID", exitCode: 2, message: "user-input response does not match the active request" });
+        active.pendingUserInput.resolve({ answers: message.answers && typeof message.answers === "object" ? message.answers : {} }); return;
+      }
+      if (message.type !== "run") { peer.send({ type: "error", code: "TYPE", exitCode: 2, message: "unsupported broker message type" }); return peer.close(); }
+      try { validateBrokerRun(message, workspace); } catch (error) { peer.send({ type: "error", code: "INVALID_REQUEST", exitCode: 2, message: error.message }); return peer.close(); }
+      if (active) { peer.send({ type: "error", code: "BUSY", exitCode: 75, message: "broker is busy with another turn" }); return peer.close(); }
+      const run = { peer, request: message, streamedItems: new Set(), streamBuffers: new Map(), renderedItems: new Set(), renderedTexts: new Set(), disconnected: false, lastTurnError: undefined, terminalTurnError: undefined, terminalTurnRequiresInterrupt: false };
+      active = run;
+      socket.once("close", () => { run.disconnected = true; run.pendingApproval?.resolve("decline"); run.pendingUserInput?.resolve({ answers: {} }); });
+      executeRun(run);
+    });
+  });
+  server.on("error", (error) => { stderr.write(`codex-cli broker: ${error.message}\n`); process.exitCode = 2; });
+  await mkdir(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+  await chmod(socketPath, 0o600);
+  const metadata = { version: BROKER_VERSION, pid: process.pid, instanceId, socketPath, cwd: workspace, experimentalApi: options.experimentalApi, startedAt: new Date().toISOString() };
+  await writeFile(pidPath, `${JSON.stringify(metadata, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  const signal = () => cleanup().then(() => process.exit(0));
+  process.once("SIGTERM", signal);
+  process.once("SIGINT", signal);
+}
+
+async function runBrokerClient(options, prompt, savedState) {
+  const { socketPath } = resolveBrokerPaths(options);
+  const status = await probeBroker(socketPath);
+  if (!status) throw new Error(`broker is not running; start it with: node ${process.argv[1]} --broker start`);
+  if (options.experimentalApi && !status.experimentalApi) throw new Error("broker was not started with --experimental-api; stop it and restart with: --broker start --experimental-api");
+  if (options.agenticErrorCode && !status.capabilities?.includes("agentic-result-v1")) {
+    throw new Error("running broker does not support --agentic-error-code; restart it with: codex-cli --broker stop && codex-cli --broker start");
+  }
+  if (!options.new && !options.threadExplicit && (
+    savedState.transport !== "broker" ||
+    !savedState.brokerInstanceId ||
+    savedState.brokerInstanceId !== status.instanceId
+  )) {
+    options.new = true;
+    options.thread = undefined;
+  }
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    const progress = new ProgressSpinner(options.progress && stderr.isTTY && !options.json);
+    const renderer = createHumanRenderer(options, progress);
+    let finished = false;
+    const finish = (error) => {
+      if (finished) return;
+      finished = true;
+      progress.stop();
+      socket.destroy();
+      if (error) reject(error); else resolve();
+    };
+    socket.once("error", finish);
+    socket.once("close", () => { if (!finished) finish(new Error("broker connection closed before completion")); });
+    socket.once("connect", () => {
+      sendBrokerMessage(socket, {
+        type: "run",
+        new: options.new,
+        autoNewOnStale: !options.threadExplicit,
+        resumeActiveTurn: !options.threadExplicit && (savedState.lastPrompt === prompt || !savedState.lastPrompt),
+        debug: options.debug,
+        agenticErrorCode: options.agenticErrorCode,
+        verbosity: options.verbosity,
+        threadParamsSpecified: options.threadParamSources.length > 0 || Boolean(options.configJson),
+        threadId: options.thread,
+        cwd: path.resolve(options.cwd),
+        prompt,
+        model: options.clearModel ? null : options.model,
+        threadParams: options.threadParams,
+        turnParams: options.turnParams,
+        approval: options.approval,
+        approvalLog: options.approvalLog,
+        interactive: options.interactive,
+        interruptPending: options.interruptPending,
+        json: options.json && !options.agenticErrorCode,
+        timeout: options.timeout,
+      });
+      progress.start();
+    });
+    new JsonLinePeer(socket, async (message) => {
+      if (message.type === "thread") {
+        options.thread = message.threadId;
+        try { await saveThread(options.state, message.threadId, options.clearModel ? undefined : options.model, { transport: "broker", brokerInstanceId: message.instanceId, lastPrompt: prompt }); }
+        catch (error) { finish(error); return; }
+        if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify({ method: "thread/selected", params: { threadId: message.threadId, brokerInstanceId: message.instanceId } })}\n`);
+        else if (message.created || options.new) {
+          progress.stop();
+          stderr.write(`codex-cli: started thread ${message.threadId}\n`);
+          progress.start();
+        }
+      } else if (message.type === "delta") renderer.agentDelta(message.itemId, message.delta);
+      else if (message.type === "item") renderer.item(message.item, message.phase);
+      else if (message.type === "debug") { progress.stop(); stderr.write(`codex-cli: debug: ${message.message}\n`); }
+      else if (message.type === "event") stdout.write(`${JSON.stringify(message.event)}\n`);
+      else if (message.type === "approval-handled") {
+        progress.stop();
+        if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify({ method: "item/commandExecution/requestApproval", params: { command: message.command, reason: message.reason, decision: message.decision } })}\n`);
+        else stderr.write(`codex-cli: approval requested for ${message.command ?? "command"}; ${message.decision}\n`);
+      }
+      else if (message.type === "approval") {
+        progress.stop();
+        if (!options.interactive || !stdin.isTTY) return sendBrokerMessage(socket, { type: "approval-response", requestId: message.requestId, decision: "decline" });
+        const terminal = createInterface({ input: stdin, output: stderr });
+        let answer;
+        try { answer = await terminal.question(`codex-cli: approve ${message.command ?? "this command"}? [y/N] `); } finally { terminal.close(); }
+        sendBrokerMessage(socket, { type: "approval-response", requestId: message.requestId, decision: /^y(es)?$/i.test(answer.trim()) ? "accept" : "decline" });
+      } else if (message.type === "user-input") {
+        progress.stop();
+        if (!options.interactive || !stdin.isTTY) return sendBrokerMessage(socket, { type: "user-input-response", requestId: message.requestId, answers: {} });
+        const terminal = createInterface({ input: stdin, output: stderr });
+        const answers = {};
+        try {
+          for (const question of message.questions ?? []) {
+            stderr.write(`codex-cli: ${question.header}: ${question.question}\n`);
+            if (question.options?.length) stderr.write(`${question.options.map((option, index) => `  ${index + 1}. ${option.label} — ${option.description}`).join("\n")}\n`);
+            const value = await terminal.question("Answer: ");
+            answers[question.id] = { answers: [question.options?.[Number(value) - 1]?.label ?? value] };
+          }
+        } finally { terminal.close(); }
+        sendBrokerMessage(socket, { type: "user-input-response", requestId: message.requestId, answers });
+      } else if (message.type === "completed") {
+        progress.stop();
+        try {
+          if (options.agenticErrorCode) emitAgenticResult(options, message.finalMessage);
+          else if (!options.json) stdout.write("\n\n");
+          finish();
+        } catch (error) {
+          finish(error);
+        }
+      } else if (message.type === "codex-error") {
+        progress.stop();
+        stderr.write(`codex-cli: ${codexErrorHeading(message)}: ${message.message}\n`);
+        progress.start();
+      } else if (message.type === "error") {
+        const error = new Error(message.message ?? "broker failed"); error.exitCode = message.exitCode ?? 2; finish(error);
+      }
+    });
+  });
+}
+
+async function main() {
+  agenticErrorCodeActive = agenticModeRequested(process.argv.slice(2));
+  let options;
+  try { options = parseArgs(process.argv.slice(2)); } catch (error) { fail(error.message); return; }
+  try { applyEnvironmentOverrides(options); } catch (error) { fail(error.message); return; }
+  agenticErrorCodeActive = options.agenticErrorCode;
+  if (options.help) { stdout.write(usage); return; }
+  options.cwd = path.resolve(options.cwd);
+  await validateWorkspace(options.cwd);
+  if (options.bashCompletion) { stdout.write(bashCompletionScript(options)); return; }
+  if (options.completionModels || options.completionCachedModels) { await printCompletionModels(options); return; }
+  options.state = path.resolve(options.cwd, options.state);
+  if (options.approvalLog) options.approvalLog = path.resolve(options.cwd, options.approvalLog);
+  if (options.brokerSocket) options.brokerSocket = path.resolve(options.cwd, options.brokerSocket);
+  if (options.brokerServe) { await serveBroker(options); return; }
+  if (options.brokerAction === "start") { await startBroker(options); return; }
+  if (options.brokerAction === "status") { await statusBroker(options); return; }
+  if (options.brokerAction === "stop") { await stopBroker(options); return; }
+  if (options.brokerAction === "threads") { await listBrokerThreads(options); return; }
+  if (options.broker && (options.direct || options.socket || options.repl || options.startDaemon)) { fail("--broker cannot be combined with --direct, --socket, --repl, or --start-daemon"); return; }
+  options.threadParams = await loadJsonObjectOptions("--thread-params", options.threadParamSources, options.cwd);
+  options.turnParams = await loadJsonObjectOptions("--turn-params", options.turnParamSources, options.cwd);
+  if (options.configJson) {
+    const configPath = path.resolve(options.cwd, options.configJson);
+    const configOverrides = await loadJsonObjectOptions("--config-json", [`@${configPath}`], options.cwd);
+    if (options.threadParams.config !== undefined && !isJsonObject(options.threadParams.config)) throw new Error("--thread-params config must be a JSON object when used with --config-json");
+    options.threadParams.config = { ...configOverrides, ...(options.threadParams.config ?? {}) };
+  }
+  rejectManagedParams("--thread-params", options.threadParams, ["cwd"]);
+  rejectManagedParams("--turn-params", options.turnParams, ["threadId", "cwd", "input", ...(options.agenticErrorCode ? ["outputSchema"] : [])]);
+  const savedState = await readSavedState(options.state);
+  if (!options.thread && !options.new) options.thread = savedState.threadId;
+  if (options.broker && !options.threadExplicit && !options.new && (!options.thread || savedState.transport !== "broker")) {
+    options.new = true;
+    options.thread = undefined;
+  }
+  try { normalizeSandboxParams(options); } catch (error) { fail(error.message); return; }
+  if ((options.threadParamSources.length || options.configJson) && !options.new && !options.broker) { fail("--config-json and --thread-params apply only when creating a thread with --new"); return; }
+  const rawModelSpecified = Object.hasOwn(options.threadParams, "model") || Object.hasOwn(options.turnParams, "model");
+  if (!options.model && !options.clearModel && !rawModelSpecified) options.model = savedState.model;
+  if (options.direct && !options.new) { fail("--direct creates a per-process thread; use --new for each direct invocation"); return; }
+  if (!options.thread && !options.new) { fail(`no saved thread found at ${options.state}; use --new or --thread\n\n${usage}`); return; }
+  if (options.thread && options.new) { fail("--thread and --new cannot be used together"); return; }
+  if (options.direct && options.thread) { fail("--direct cannot resume a saved thread; use --new"); return; }
+  if (options.socket && options.direct) { fail("--socket and --direct cannot be used together"); return; }
+  if (options.repl && !options.direct) { fail("--repl requires --direct"); return; }
+  if (options.repl && options.agenticErrorCode) { fail("--agentic-error-code cannot be combined with --repl"); return; }
+  if (options.repl && !stdin.isTTY) { fail("--repl requires a terminal standard input"); return; }
+  if (options.model && options.clearModel) { fail("--model and --clear-model cannot be used together"); return; }
+  if (options.clearModel && rawModelSpecified) { fail("--clear-model cannot be combined with model in --thread-params or --turn-params"); return; }
+
+  const userPrompt = (await promptFor(options)).trim();
+  if (!userPrompt) { fail("a prompt is required"); return; }
+  const prompt = options.agenticErrorCode ? promptWithAgenticResultContract(userPrompt) : userPrompt;
+
+  if (options.broker) { await runBrokerClient(options, prompt, savedState); return; }
+
+  if (options.startDaemon && !options.socket && !options.direct) await run(options.codex, ["app-server", "daemon", "start"]);
+
+  let targetThreadId;
+  let targetTurnId;
+  let lastTurnError;
+  let terminalTurnError;
+  let terminalTurnRequiresInterrupt = false;
+  const progress = new ProgressSpinner(options.progress && stderr.isTTY && !options.json);
+  const renderer = createHumanRenderer(options, progress);
+  const socketPath = options.socket ?? `${process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`}/app-server-control/app-server-control.sock`;
+  const onEvent = (event) => {
+    debug(options, `received event ${event.method}`);
+    const eventError = event.params?.turn?.error ?? event.params?.error;
+    if (eventError !== undefined && eventError !== null) lastTurnError = eventError;
+    const notification = codexErrorNotification(event);
+    if (notification) {
+      lastTurnError = notification.error;
+      if (!notification.willRetry) {
+        terminalTurnError = notification.error;
+        terminalTurnRequiresInterrupt = notification.retrySuppressed;
+      }
+      progress.stop();
+      stderr.write(`codex-cli: ${codexErrorHeading(notification)}: ${notification.message}\n`);
+    }
+    if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify(event)}\n`);
+    else if (event.method === "item/agentMessage/delta") {
+      renderer.agentDelta(event.params.itemId, event.params.delta);
+    } else if (event.method === "item/started") {
+      renderer.item(event.params.item, "started");
+    } else if (event.method === "item/completed") {
+      renderer.item(event.params.item, "completed");
+    }
+    if (event.method === "turn/completed" && event.params.threadId === targetThreadId && event.params.turn?.id === targetTurnId) {
+      for (const item of event.params.turn?.items ?? []) renderer.item(item, "completed");
+    }
+  };
+  const onRequest = (request) => {
+    progress.stop();
+    return serverRequestResult(options, request);
+  };
+  const client = options.direct
+    ? new StdioJsonRpcClient(options.codex, onEvent, onRequest)
+    : new JsonRpcClient(socketPath, onEvent, onRequest);
+
+  try {
+    debug(options, options.direct ? `starting direct app-server with ${options.codex}` : `connecting to ${socketPath}`);
+    await client.request("initialize", {
+      clientInfo: { name: "codex-cli", title: "Codex CLI app-server client", version: "0.1.0" },
+      capabilities: { experimentalApi: options.experimentalApi, requestAttestation: false },
+    });
+    if (!options.direct && options.approval !== "decline") {
+      const requirements = await client.request("configRequirements/read", {});
+      if (!requirements.requirements.allowedApprovalPolicies?.includes("never")) {
+        const error = new Error("--approval accept cannot be used because this app-server forbids the never approval policy; approve the request in its owning Codex UI or ask the administrator to allow never");
+        error.exitCode = 3;
+        throw error;
+      }
+    }
+    let threadId = options.thread;
+    if (options.new) {
+      const threadStartParams = { cwd: options.cwd, ephemeral: false, ...options.threadParams };
+      if (hasModelOverride(options)) threadStartParams.model = options.clearModel ? null : options.model;
+      const response = await client.request("thread/start", threadStartParams);
+      threadId = response.thread.id;
+      if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify({ method: "thread/selected", params: { threadId } })}\n`);
+      else stderr.write(`codex-cli: started thread ${threadId}\n`);
+    }
+    if (!options.direct) await saveThread(options.state, threadId, options.clearModel ? undefined : options.model);
+    targetThreadId = threadId;
+    if (!options.new) {
+      const readOrResumeThread = async () => {
+        const resumeThread = () => {
+          const resumeParams = { threadId, cwd: options.cwd };
+          if (hasModelOverride(options)) resumeParams.model = options.clearModel ? null : options.model;
+          return client.request("thread/resume", resumeParams);
+        };
+        try {
+          const response = await client.request("thread/read", { threadId, includeTurns: true });
+          return threadIsNotLoaded(response) ? resumeThread() : response;
+        }
+        catch {
+          return resumeThread();
+        }
+      };
+      const beforeStart = await readOrResumeThread();
+      const activeTurns = beforeStart.thread.turns.filter((turn) => turn.status === "inProgress");
+      if (activeTurns.length) {
+        if (!options.interruptPending) {
+          const error = new Error(`thread ${threadId} has active turn${activeTurns.length === 1 ? "" : "s"} ${activeTurns.map((turn) => turn.id).join(", ")}; use --interrupt-pending to cancel ${activeTurns.length === 1 ? "it" : "them"}, or --new to use a fresh thread`);
+          error.exitCode = 125;
+          throw error;
+        }
+        for (const turn of activeTurns) {
+          debug(options, `interrupting active turn ${turn.id}`);
+          await client.request("turn/interrupt", { threadId, turnId: turn.id });
+        }
+      }
+    }
+    let currentPrompt = prompt;
+    for (;;) {
+      const turnStartParams = {
+        ...options.turnParams,
+        ...(options.agenticErrorCode ? { outputSchema: AGENTIC_RESULT_SCHEMA } : {}),
+        threadId,
+        cwd: options.cwd,
+        ...(!options.direct && options.approval !== "decline" ? { approvalPolicy: "never" } : {}),
+        input: [{ type: "text", text: currentPrompt, text_elements: [] }],
+      };
+      if (hasModelOverride(options)) turnStartParams.model = options.clearModel ? null : options.model;
+      lastTurnError = undefined;
+      terminalTurnError = undefined;
+      terminalTurnRequiresInterrupt = false;
+      const turnResponse = await client.request("turn/start", turnStartParams);
+      targetTurnId = turnResponse.turn.id;
+      debug(options, `started turn ${targetTurnId} in thread ${threadId}${!options.direct && options.approval !== "decline" ? " with approvalPolicy=never" : ""}`);
+      progress.start();
+      const deadline = Date.now() + options.timeout * 1000;
+      let lastTurnStatus;
+      for (;;) {
+        const history = await client.request("thread/read", { threadId, includeTurns: true });
+        const turn = history.thread.turns.find((candidate) => candidate.id === targetTurnId);
+        const threadStatus = history.thread.status?.type ?? history.thread.status;
+        const activeFlags = history.thread.status?.activeFlags?.join(",");
+        const observedStatus = turn?.status ?? (activeFlags ? `${threadStatus} (${activeFlags})` : threadStatus ?? "not found");
+        if (observedStatus !== lastTurnStatus) {
+          lastTurnStatus = observedStatus;
+          debug(options, `turn ${targetTurnId} status: ${lastTurnStatus ?? "not found"}`);
+        }
+        if (history.thread.status?.type === "systemError") throw systemError(turn?.error ?? lastTurnError);
+        if (terminalTurnError) {
+          if (terminalTurnRequiresInterrupt) {
+            terminalTurnRequiresInterrupt = false;
+            try { await client.request("turn/interrupt", { threadId, turnId: targetTurnId }); }
+            catch { /* The definitive error still wins if cancellation races with turn completion. */ }
+          }
+          throw terminalCodexError(terminalTurnError);
+        }
+        if (turn?.status === "completed") {
+          for (const item of turn.items ?? []) renderer.item(item, "completed");
+          if (options.agenticErrorCode) emitAgenticResult(options, finalAgentMessage(turn));
+          break;
+        }
+        if (turn?.status === "failed") {
+          throw new Error(turnErrorDetails(turn.error) ?? "Codex turn failed");
+        }
+        if (turn?.status === "interrupted") throw interruptedTurnError(turn);
+        if (Date.now() >= deadline) {
+          const seconds = Number.isInteger(options.timeout) ? options.timeout : options.timeout.toString();
+          const error = new Error(`timed out after ${seconds} seconds waiting for turn ${targetTurnId} to complete (last status: ${lastTurnStatus ?? "not found"}; it may be awaiting approval or a command may be blocked)`);
+          error.exitCode = 124;
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      progress.stop();
+      if (!options.json && !options.agenticErrorCode) stdout.write("\n\n");
+      if (!options.repl) break;
+      const terminal = createInterface({ input: stdin, output: stderr });
+      try { currentPrompt = (await terminal.question("codex-cli> ")).trim(); } finally { terminal.close(); }
+      if (!currentPrompt || currentPrompt === "/exit") break;
+    }
+  } catch (error) {
+    if (!options.socket && !options.direct && /ENOENT|no such file/i.test(error.message)) {
+      throw new Error(`${error.message}. Start the managed server with: codex app-server daemon start`);
+    }
+    throw error;
+  } finally {
+    progress.stop();
+    client.close();
+  }
+}
+
+function entryPath(filePath) {
+  try { return realpathSync(filePath); } catch { return path.resolve(filePath); }
+}
+
+if (process.argv[1] && entryPath(fileURLToPath(import.meta.url)) === entryPath(process.argv[1])) {
+  main().catch((error) => fail(error.message, error.exitCode));
+}
+
+export { JsonRpcClient, ProgressSpinner, StdioJsonRpcClient, approvalResult, classifyCodexError, createHumanRenderer, debug, finalAgentMessage, formatThreadItem, logApproval, parseAgenticResult, parseArgs, promptWithAgenticResultContract, serverRequestResult, userInputResult };
