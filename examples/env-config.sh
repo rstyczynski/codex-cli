@@ -8,6 +8,7 @@ if ! codex-cli --broker status >/dev/null 2>&1; then
 fi
 
 cleanup() {
+  unset CDXCLI_BROKER CDXCLI_NEW CDXCLI_APPROVAL CDXCLI_VERBOSITY CDXCLI_TIMEOUT CDXCLI_AGENTIC_ERROR_CODE CDXCLI_PROMPT
   if [[ "$broker_started_here" == true ]]; then
     codex-cli --broker stop >/dev/null 2>&1 || true
   fi
@@ -33,14 +34,15 @@ Agentic exit-code rules, evaluated in this order:
 __PROMPT
 )
 
-if summary=$(codex-cli \
-  --broker \
-  --new \
-  --approval accept-for-session \
-  --verbosity medium \
-  --timeout 900 \
-  --agentic-error-code \
-  --prompt "$prompt"); then
+# Export CDXCLI_* configuration, as is useful in a CI job or a wrapper script.
+export CDXCLI_BROKER=true
+export CDXCLI_NEW=true
+export CDXCLI_APPROVAL=accept-for-session
+export CDXCLI_VERBOSITY=high
+export CDXCLI_TIMEOUT=900
+export CDXCLI_AGENTIC_ERROR_CODE=true
+export CDXCLI_PROMPT="$prompt"
+if summary=$(codex-cli); then
   status=0
 else
   status=$?

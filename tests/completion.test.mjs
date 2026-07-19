@@ -103,6 +103,7 @@ test("generated Bash completion is valid and embeds safely quoted executable pat
 
 test("sourcing registers codex-cli without replacing existing shell handlers", () => {
   let result = runBash([
+    "PATH=",
     "unset -f codex-cli 2>/dev/null || true",
     `source <(${sourceCommand()})`,
     "type -t codex-cli",

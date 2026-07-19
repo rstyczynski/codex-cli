@@ -17,7 +17,7 @@
 
 ## Current State
 
-`codex-cli` is now a dependency-free Node.js terminal client for the local Codex app-server. It supports broker, direct, and managed socket modes; persistent broker threads; explicit thread selection and listing; approvals and user input; Bash completion; model completion; rich verbosity levels; debug diagnostics; JSONL output; agentic script exit codes; raw app-server parameter forwarding; and guarded sandbox handling.
+`codex-cli` is now a dependency-free (single file) Node.js terminal client for the local Codex app-server. It supports broker, direct, and managed socket modes; persistent broker threads; explicit thread selection and listing; approvals and user input; Bash completion; model completion; rich verbosity levels; debug diagnostics; JSONL output; agentic script exit codes; raw app-server parameter forwarding; and guarded sandbox handling.
 
 The active test suite covers CLI validation, broker lifecycle, thread resume, explicit not-loaded thread resume, direct mode, socket mode, WebSocket framing, Bash completion, output rendering, agentic result validation, app-server error forwarding, and sandbox parameter guarding.
 
