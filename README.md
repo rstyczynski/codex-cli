@@ -1,6 +1,6 @@
 # codex-cli
 
-`codex-cli` is a dependency-free Node.js client for the local Codex app-server. It sends prompts to Codex threads, streams responses, handles approvals and structured user input in the terminal, and maps validated agentic outcomes to process exit codes for reliable shell automation.
+`codex-cli` is a Node.js client for the local Codex app-server. It sends prompts to Codex threads, streams responses, handles approvals and structured user input in the terminal, and maps validated agentic outcomes to process exit codes for reliable shell automation.
 
 ## Table of contents
 
