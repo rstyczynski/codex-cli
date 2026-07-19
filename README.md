@@ -37,8 +37,6 @@ export PATH="$PWD/bin:$PATH"
 Then run commands from the workspace you want Codex to use:
 
 ```bash
-export CODEX_HOME=$PWD/.cdx
-mkdir -p $CODEX_HOME
 codex-cli --help
 source <(codex-cli --bash_completion)
 ```
