@@ -1,6 +1,6 @@
 .cdx/
 .codex/
-./codex-cli
+.codex-cli/
 node_modules/
 coverage/
 .DS_Store
