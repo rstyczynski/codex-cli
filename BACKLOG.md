@@ -15,6 +15,7 @@
   - [CDX-12 Image Attachments](#cdx-12-image-attachments)
   - [CDX-13 cpb-paste Clipboard Utility](#cdx-13-cpb-paste-clipboard-utility)
   - [CDX-14 Prompt Attachment Actions](#cdx-14-prompt-attachment-actions)
+  - [CDX-15 hiai Broker Launcher Regression](#cdx-15-hiai-broker-launcher-regression)
 - [Open](#open)
   - [CDX-6 Upstream Turn-Level Sandbox Enforcement](#cdx-6-upstream-turn-level-sandbox-enforcement)
   - [CDX-7 Install and Release Polish](#cdx-7-install-and-release-polish)
@@ -94,6 +95,7 @@ Status: implemented.
 Delivered:
 
 - Bash completion includes `--thread` and `--thread-params` in broker contexts.
+- Completion is registered for the `codex-cli`, `cdx`, and `hiai` command names.
 - Completion covers public flags and hides internal broker flags.
 - Tests cover option names, broker action values, files, executables, models, and script paths with spaces.
 
@@ -225,3 +227,14 @@ Potential work:
 - Add a short troubleshooting section for authentication failures, broker restarts, stale threads, and sandbox expectations.
 - Add examples for attaching to known thread IDs and for safe read-only runs.
 - Keep `README.md`, `bin/README.md`, `BUGS.md`, and this backlog consistent after behavior changes.
+
+### CDX-15 hiai Broker Launcher Regression
+
+Status: implemented.
+
+The `hiai` wrapper, npm command, and generated shell fallback now select broker
+mode so existing approval handling receives and answers app-server requests.
+The launcher path is covered by completion, forwarding, and broker approval
+integration tests plus the maintained approval example.
+
+Design: `model/CDX-15-hiai-broker-launcher-regression.md`.

@@ -20,7 +20,7 @@ example only inspects configuration and does not contact Codex.
 | Quick introduction | [`intro.sh`](intro.sh) | Complete automation-friendly workflow |
 | Broker mode | [`broker-mode.sh`](broker-mode.sh) | Start, continue, inspect, and clean up a broker |
 | Threads | [`threads.sh`](threads.sh) | Create, list, and explicitly select threads |
-| Approvals and user input | [`approvals-and-user-input.sh`](approvals-and-user-input.sh) | Approval policies, audit log, and interactive questions |
+| Approvals and user input | [`approvals-and-user-input.sh`](approvals-and-user-input.sh) | `hiai` broker approvals, audit log, and interactive questions |
 | Client configuration | [`layered-config.sh`](layered-config.sh) | Inspect automatic files, overlays, environment, and CLI precedence |
 | Environment overrides | [`env-config.sh`](env-config.sh) | Configure a run with `CDXCLI_*` variables |
 | Image attachments | [`image-attachments.sh`](image-attachments.sh) | Attach the included sample PNG or a supplied local image to one read-only prompt |

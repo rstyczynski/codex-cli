@@ -6,7 +6,7 @@
   "bin": {
     "codex-cli": "bin/codex-cli",
     "cdx": "bin/codex-cli",
-    "hiai": "bin/codex-cli",
+    "hiai": "bin/hiai",
     "cpb-paste": "bin/cpb-paste"
   },
   "scripts": {

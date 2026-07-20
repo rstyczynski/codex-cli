@@ -41,9 +41,9 @@ Unix-socket transport, so on Windows use `--broker` or `--direct`; an explicit
 pipe.
 
 Make the executable available on `PATH` by adding the repository's `bin/`
-directory or by installing this package. `codex-cli`, `cdx`, and `hiai` invoke
-the same client. On macOS or Linux, run the requirements and option-discovery
-example from the repository root:
+directory or by installing this package. `cdx` is a short form of `codex-cli`;
+`hiai` invokes the same client with `--broker` automatically. On macOS or Linux,
+run the requirements and option-discovery example from the repository root:
 
 ```bash
 PATH="$PWD/bin:$PATH" ./examples/setup-and-help.sh
@@ -77,6 +77,14 @@ Run the maintained [example script](examples/intro.sh) from the repository root:
 
 Broker mode is the primary way to use `codex-cli`. It keeps one local `codex app-server --stdio` process alive for the workspace, preserves the selected thread across CLI invocations, and supports normal prompts, scripts, approvals, user input, and agentic exit codes.
 
+The `hiai` launcher selects broker mode automatically, so these commands are
+equivalent:
+
+```bash
+hiai --new "Summarize the current Git status"
+codex-cli --broker --new "Summarize the current Git status"
+```
+
 ```bash
 ./examples/broker-mode.sh
 ```
@@ -107,7 +115,9 @@ Broker-created threads belong to the broker's running app-server. After a broker
 
 Approval requests default to `decline` so automation does not accidentally
 authorize a command. Choose a policy explicitly; the example demonstrates an
-approval audit log and, when a terminal is attached, structured user input.
+approval audit log and, when a terminal is attached, structured user input. It
+uses `hiai` without an explicit `--broker`, validating the broker-first launcher,
+and `sudo -n` so the command cannot block waiting for a password.
 
 ```bash
 ./examples/approvals-and-user-input.sh
@@ -463,16 +473,39 @@ codex-cli --socket '\\.\pipe\codex-app-server' --new "Review the current change"
 
 ## Bash completion
 
-Load and inspect the generated completion script in Bash:
+Enable completion in the current Bash shell:
+
+```bash
+source <(codex-cli --bash-completion)
+```
+
+To enable it in every new Bash shell, add that `source` command to `~/.bashrc`,
+then reload the file:
+
+```bash
+source ~/.bashrc
+```
+
+Completion is now available under every command name. For example, type one of
+these commands and press Tab at `<Tab>`:
+
+```text
+codex-cli --bro<Tab>
+cdx --thr<Tab>
+hiai --model <Tab>
+```
+
+The repository also includes an executable example that loads and displays the
+registered completion definitions:
 
 ```bash
 ./examples/bash-completion.sh
 ```
 
-It completes options, broker actions, file arguments, approval modes, and models. Model completion first uses Codex's local catalog cache and falls back to the local app-server when necessary. The model result is cached in Bash for 30 seconds.
+It registers the same completion for `codex-cli`, `cdx`, and `hiai`, covering options, broker actions, file arguments, approval modes, and models. Model completion first uses Codex's local catalog cache and falls back to the local app-server when necessary. The model result is cached in Bash for 30 seconds.
 
-After sourcing, a `codex-cli` shell function is supplied when a command of that
-name is not already installed.
+After sourcing, shell functions for `codex-cli`, `cdx`, and `hiai` are supplied
+for any of those command names that are not already installed.
 
 ## Local files and lifecycle
 

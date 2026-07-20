@@ -80,7 +80,7 @@ test("generated Bash completion is valid and embeds safely quoted executable pat
   assert.equal(generated.status, 0, generated.stderr);
   assert.match(generated.stdout, /^# Bash completion for codex-cli/m);
   assert.match(generated.stdout, /_codex_cli_complete/);
-  assert.match(generated.stdout, /complete .*codex-cli/);
+  assert.match(generated.stdout, /complete .*codex-cli cdx hiai/);
   assert.doesNotMatch(generated.stdout, /codex-cli codex-cli/, "completion target should only be registered once");
 
   const syntax = spawnSync("bash", ["--noprofile", "--norc", "-n"], {
@@ -101,30 +101,53 @@ test("generated Bash completion is valid and embeds safely quoted executable pat
   assert.deepEqual(completed.replies, ["fake-default", "fake-fast"]);
 });
 
-test("sourcing registers codex-cli without replacing existing shell handlers", () => {
+test("sourcing registers codex-cli aliases without replacing existing shell handlers", () => {
   let result = runBash([
     "PATH=",
-    "unset -f codex-cli 2>/dev/null || true",
+    "unset -f codex-cli cdx hiai 2>/dev/null || true",
     `source <(${sourceCommand()})`,
     "type -t codex-cli",
+    "type -t cdx",
+    "type -t hiai",
     "complete -p codex-cli",
+    "complete -p cdx",
+    "complete -p hiai",
   ].join("\n"));
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^function$/m);
+  assert.equal(result.stdout.match(/^function$/gm)?.length, 3);
   assert.match(result.stdout, /-F _codex_cli_complete codex-cli/);
+  assert.match(result.stdout, /-F _codex_cli_complete cdx/);
+  assert.match(result.stdout, /-F _codex_cli_complete hiai/);
 
   result = runBash([
     "codex-cli() { printf 'existing-command\\n'; }",
+    "cdx() { printf 'existing-cdx\\n'; }",
+    "hiai() { printf 'existing-hiai\\n'; }",
     "_existing_node_completion() { COMPREPLY=(existing-node); }",
     "complete -F _existing_node_completion node",
     `source <(${sourceCommand()})`,
     "codex-cli",
+    "cdx",
+    "hiai",
     "complete -p node",
   ].join("\n"));
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^existing-command$/m);
+  assert.match(result.stdout, /^existing-cdx$/m);
+  assert.match(result.stdout, /^existing-hiai$/m);
   assert.match(result.stdout, /-F _existing_node_completion node/);
   assert.doesNotMatch(result.stdout, /-F _codex_cli_node_complete node/);
+});
+
+test("generated hiai fallback selects broker mode", () => {
+  const result = runBash([
+    "PATH=",
+    "unset -f hiai 2>/dev/null || true",
+    `source <(${sourceCommand()})`,
+    "hiai --show-config",
+  ].join("\n"));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).values.broker, true);
 });
 
 test("option-name completion covers every public flag and both Bash-completion spellings", () => {
@@ -141,6 +164,16 @@ test("option-name completion covers every public flag and both Bash-completion s
   assert.equal(result.replies.length, expected.length, "completion should not emit duplicate flags");
   assert.ok(!result.replies.includes("--broker-serve"), "internal flags must remain hidden");
   assert.ok(!result.replies.includes("--completion-models"), "completion protocol flags must remain hidden");
+
+  for (const command of ["cdx", "hiai"]) {
+    const commandResult = completion([command, "--thr"]);
+    assert.equal(commandResult.status, 0, commandResult.stderr);
+    assert.deepEqual(commandResult.replies, ["--thread-params", "--thread"]);
+  }
+
+  const hiaiAction = completion(["hiai", "st"]);
+  assert.equal(hiaiAction.status, 0, hiaiAction.stderr);
+  assert.deepEqual(hiaiAction.replies, ["start", "status", "stop"]);
 
   const alias = completion(["codex-cli", "--bash-"]);
   assert.equal(alias.status, 0, alias.stderr);
@@ -299,15 +332,17 @@ test("Bash model cache is reused for 30 seconds and invalidated by age or contex
   assert.equal(requests.filter((request) => request.method === "initialize").length, 3);
 });
 
-test("Node invocation delegates only codex-cli scripts to the completion handler", () => {
-  let result = completion([process.execPath, cli, "--ba"], {
-    cword: 2,
-    handler: "_codex_cli_node_complete",
-  });
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(new Set(result.replies), new Set(["--bash_completion", "--bash-completion"]));
+test("Node invocation delegates only codex-cli command scripts to the completion handler", () => {
+  for (const script of [cli, "cdx", "/usr/local/bin/hiai"]) {
+    const completed = completion([process.execPath, script, "--ba"], {
+      cword: 2,
+      handler: "_codex_cli_node_complete",
+    });
+    assert.equal(completed.status, 0, completed.stderr);
+    assert.deepEqual(new Set(completed.replies), new Set(["--bash_completion", "--bash-completion"]));
+  }
 
-  result = runBash([
+  const result = runBash([
     `source <(${sourceCommand()})`,
     `COMP_WORDS=(${shellQuote(process.execPath)} ${shellQuote("different-script.mjs")} ${shellQuote("--ba")})`,
     "COMP_CWORD=2",

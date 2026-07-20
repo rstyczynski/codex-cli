@@ -6,12 +6,15 @@ if [[ -z "${BASH_VERSION:-}" ]]; then
   exit 1
 fi
 
-# The generated script registers option-aware completion. It also defines a
-# codex-cli shell function when no executable with that name is installed.
+# The generated script registers option-aware completion for codex-cli, cdx,
+# and hiai. It also defines each command when that name is not installed; the
+# generated hiai function selects broker mode like the installed launcher.
 # The generated completion is intentionally dynamic.
 # shellcheck disable=SC1090
 source <(codex-cli --bash_completion)
 
 printf 'completion definition:\n'
 complete -p codex-cli
-printf '\nTry typing: codex-cli --model <Tab>\n'
+complete -p cdx
+complete -p hiai
+printf '\nTry typing: cdx --model <Tab> or hiai --thread <Tab>\n'
