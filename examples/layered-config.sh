@@ -26,7 +26,7 @@ printf '%s\n' '{"timeout":60,"threadParams":{"fromEnvironmentConfig":true}}' \
 printf '%s\n' '{"timeout":75,"threadParams":{"fromExplicitConfig":true}}' \
   > "$directory/invocation.json"
 
-printf '%s\n' 'Resolved configuration: automatic files, CDX_CONFIG, --config, environment, then CLI.'
+printf '%s\n' 'Configured values: automatic files, CDX_CONFIG, --config, environment, then CLI.'
 (
   cd "$directory"
   HOME="$home" \
@@ -36,5 +36,5 @@ printf '%s\n' 'Resolved configuration: automatic files, CDX_CONFIG, --config, en
       --config invocation.json \
       --timeout 120 \
       --thread-params '{"fromCli":true}' \
-      --show-config
+      --show-config set
 )

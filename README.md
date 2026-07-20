@@ -158,17 +158,23 @@ configuration path.
 }
 ```
 
-Inspect the effective values, winning sources, and risk classifications without
-contacting Codex:
+Inspect configured values, their winning sources, and risk classifications
+without contacting Codex. With no mode, `--show-config` is equivalent to
+`--show-config set` and omits fields whose winning source is the built-in
+default. A value explicitly set to the same value as its default is still
+shown. Use `all` to include built-in defaults:
 
 ```bash
-codex-cli --config ci.json --show-config
+codex-cli --config ci.json --show-config       # configured fields only
+codex-cli --config ci.json --show-config set   # same, explicitly
+codex-cli --config ci.json --show-config all   # every resolved field
 ```
 
 Run the self-contained CDX-11 example to see automatic user, Git-root, and
 current-directory configuration files followed by `CDX_CONFIG`, `--config`,
 `CDXCLI_*`, and command-line overrides. It creates only a temporary workspace
-and prints the resolved configuration; Codex is not contacted.
+and prints the configured portion of the resolved configuration; Codex is not
+contacted.
 
 ```bash
 ./examples/layered-config.sh

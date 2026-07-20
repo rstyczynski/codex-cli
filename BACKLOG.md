@@ -141,7 +141,7 @@ Delivered:
 - Resolve configuration-relative paths from their declaring file.
 - Shallow-merge `threadParams` and `turnParams` while tracking winning sources.
 - Warn before thread creation when auto-discovered project settings widen authority or contain opaque raw fields.
-- Preserve clean JSON stdout and report effective sources through `--debug` and `--show-config`.
+- Preserve clean JSON stdout and report effective sources through `--debug` and `--show-config`; default to configured fields while retaining an `all` view.
 
 Design: `model/CDX-11-layered-client-configuration.md`.
 

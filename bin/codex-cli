@@ -30,7 +30,7 @@ Options:
   --prompt TEXT        Prompt text (alternative to positional PROMPT)
   --image PATH         Attach a PNG, JPEG, WebP, or GIF (repeatable; max 20 MiB each)
   --config PATH        Client configuration JSON file (repeatable)
-  --show-config        Print resolved client configuration and sources, then exit
+  --show-config [MODE] Print values and sources: set (default) or all; then exit
   --config-json PATH   JSON object of Codex config overrides for a new thread
   --thread-params JSON Thread/start parameters as a JSON object or @FILE (repeatable)
   --turn-params JSON   Turn/start parameters as a JSON object or @FILE (repeatable)
@@ -106,12 +106,13 @@ function environmentValue(name, environment = process.env) {
 }
 
 const BROKER_ACTIONS = ["start", "status", "stop", "threads"];
+const SHOW_CONFIG_MODES = ["set", "all"];
 const OPTION_DEFINITIONS = [
   { flags: ["--help", "-h"], key: "help", kind: "boolean", environment: "HELP" },
   { flags: ["--socket"], key: "socket", kind: "value" }, { flags: ["--direct"], key: "direct", kind: "boolean" },
   { flags: ["--broker"], key: "broker", kind: "broker" }, { flags: ["--broker-serve"], key: "brokerServe", kind: "boolean", impliesBroker: true },
   { flags: ["--broker-socket"], key: "brokerSocket", kind: "value" }, { flags: ["--prompt"], key: "prompt", kind: "append" }, { flags: ["--image"], key: "images", kind: "append" },
-  { flags: ["--config"], key: "configSources", kind: "config-file", environment: false }, { flags: ["--show-config"], key: "showConfig", kind: "boolean", environment: false },
+  { flags: ["--config"], key: "configSources", kind: "config-file", environment: false }, { flags: ["--show-config"], key: "showConfig", kind: "show-config", environment: false },
   { flags: ["--config-json"], key: "configJson", kind: "value" }, { flags: ["--thread-params"], key: "threadParamSources", kind: "append" },
   { flags: ["--turn-params"], key: "turnParamSources", kind: "append" }, { flags: ["--thread"], key: "thread", kind: "value", explicit: "threadExplicit" },
   { flags: ["--new"], key: "new", kind: "boolean" }, { flags: ["--state"], key: "state", kind: "value", explicit: "stateExplicit" },
@@ -254,6 +255,9 @@ function assignOption(options, definition, value, source) {
     if (typeof value !== "string") throw new Error(`${label} must be low, medium, or high`);
     if (!["low", "medium", "high"].includes(value)) throw new Error(`${label} must be low, medium, or high`);
     options[definition.key] = value;
+  } else if (definition.kind === "show-config") {
+    if (!SHOW_CONFIG_MODES.includes(value)) throw new Error(`${label} must be set or all`);
+    options[definition.key] = value;
   } else if (definition.kind === "append") {
     const entry = { value, source };
     if (source.kind === "environment") options[definition.key] = [entry];
@@ -303,6 +307,10 @@ function parseArgs(argv, options = createDefaultOptions(process.cwd())) {
     const source = { kind: "command", flag: argument };
     if (definition.kind === "boolean") assignOption(options, definition, undefined, source);
     else if (definition.kind === "broker") assignOption(options, definition, BROKER_ACTIONS.includes(argv[index + 1]) ? argv[++index] : undefined, source);
+    else if (definition.kind === "show-config") {
+      const value = argv[index + 1] && !argv[index + 1].startsWith("-") ? argv[++index] : "set";
+      assignOption(options, definition, value, source);
+    }
     else {
       const value = argv[++index];
       if (!value) throw new Error(`${argument} requires a value`);
@@ -589,19 +597,23 @@ function configurationSourceRecord(source, risk) {
   return { source: sourceDescription(source), layer: source?.layer ?? source?.kind ?? "default", risk };
 }
 
-function resolvedConfiguration(options) {
+function resolvedConfiguration(options, mode = "all") {
   const values = {};
   const sources = {};
   for (const field of CONFIGURATION_FIELDS) {
     if (field.kind === "params") {
+      const keys = Object.keys(options[field.optionKey]);
+      if (mode === "set" && keys.length === 0) continue;
       values[field.key] = options[field.optionKey];
-      sources[field.key] = Object.fromEntries(Object.keys(options[field.optionKey]).map((key) => [key, configurationSourceRecord(
+      sources[field.key] = Object.fromEntries(keys.map((key) => [key, configurationSourceRecord(
         options.rawParameterSources[field.optionKey][key] ?? defaultSource(),
         RAW_PARAMETER_RISKS[field.optionKey][key] ?? "unclassified",
       )]));
     } else {
+      const source = options.optionSources[field.definition.key] ?? defaultSource();
+      if (mode === "set" && source.kind === "default") continue;
       values[field.key] = options[field.definition.key] ?? null;
-      sources[field.key] = configurationSourceRecord(options.optionSources[field.definition.key] ?? defaultSource(), field.risk);
+      sources[field.key] = configurationSourceRecord(source, field.risk);
     }
   }
   return { values, sources };
@@ -1210,6 +1222,7 @@ function bashCompletionScript(options) {
     "    --model) _codex_cli_model_values \"$completion_cwd\" \"$completion_codex\"; _codex_cli_words \"$_CODEX_CLI_MODEL_CACHE\" \"$cur\"; return ;;",
     "    --approval) _codex_cli_words 'decline accept accept-for-session' \"$cur\"; return ;;",
     "    --verbosity) _codex_cli_words 'low medium high' \"$cur\"; return ;;",
+    "    --show-config) if [[ $cur != -* ]]; then _codex_cli_words 'set all' \"$cur\"; return; fi ;;",
     "    --broker) if [[ $cur != -* ]]; then _codex_cli_words 'start status stop threads' \"$cur\"; return; fi ;;",
     "    --cwd) _codex_cli_compgen -d \"$cur\"; return ;;",
     "    --socket|--broker-socket|--state|--approval-log|--config|--config-json|--image) _codex_cli_compgen -f \"$cur\"; return ;;",
@@ -2486,7 +2499,7 @@ async function main() {
     rejectManagedParams("--thread-params", options.threadParams, ["cwd"]);
     rejectManagedParams("--turn-params", options.turnParams, ["threadId", "cwd", "input", ...(options.agenticErrorCode ? ["outputSchema"] : [])]);
   } catch (error) { fail(error.message); return; }
-  if (options.showConfig) { stdout.write(`${JSON.stringify(resolvedConfiguration(options), null, 2)}\n`); return; }
+  if (options.showConfig) { stdout.write(`${JSON.stringify(resolvedConfiguration(options, options.showConfig), null, 2)}\n`); return; }
   emitConfigurationDebug(options);
   await validateWorkspace(options.cwd);
   if (options.bashCompletion) { stdout.write(bashCompletionScript(options)); return; }

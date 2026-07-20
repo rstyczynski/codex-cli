@@ -115,7 +115,12 @@ Missing auto-discovered files are normal and ignored. Any discovered file that e
 
 Do not support includes, JSON comments, command interpolation, shell expansion, or configuration-driven executable commands. One JSON object per file keeps loading deterministic and auditable.
 
-Add `--show-config` to print the resolved configuration as JSON with the source of every field. It should be safe to run without contacting Codex and must redact any future secret-bearing fields.
+Add `--show-config [set|all]` to print resolved configuration as JSON. The
+default `set` view includes only fields whose winning source is not the built-in
+default; explicitly setting a value equal to its default still includes it.
+The `all` view includes every field. Both views include each visible field's
+source, must be safe to run without contacting Codex, and must redact any future
+secret-bearing fields.
 
 ## Parsing Strategy
 
@@ -141,4 +146,5 @@ Track an option's source while merging. This enables `--debug` and `--show-confi
 - Warnings precede `thread/start`, preserve stdout and JSON output, and do not alter the exit status.
 - The CLI-owned risk catalog classifies every supported configuration key and warns about unclassified raw app-server fields from auto-discovered configuration files.
 - `--config-json` continues to affect only Codex `thread/start` configuration.
-- `--show-config` reports effective values and sources without contacting Codex.
+- `--show-config` and `--show-config set` report configured values and sources;
+  `--show-config all` also reports built-in defaults, without contacting Codex.

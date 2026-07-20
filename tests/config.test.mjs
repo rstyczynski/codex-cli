@@ -40,13 +40,31 @@ async function readTrace(workspace) {
   return contents.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-test("built-in client configuration uses a 120-second timeout", async () => {
+test("show-config defaults to configured values and all includes built-in defaults", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx config defaults "));
-  const result = invoke(workspace, ["--show-config"], { home: path.join(workspace, "home") });
+  let result = invoke(workspace, ["--show-config"], { home: path.join(workspace, "home") });
   assert.equal(result.status, 0, result.stderr);
-  const shown = JSON.parse(result.stdout);
+  let shown = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(shown.values).sort(), ["codex", "cwd"]);
+  assert.deepEqual(Object.keys(shown.sources).sort(), ["codex", "cwd"]);
+  assert.equal(shown.sources.cwd.source, "--cwd");
+  assert.equal(shown.sources.codex.source, "--codex");
+
+  result = invoke(workspace, ["--show-config", "set", "--timeout", "120"], { home: path.join(workspace, "home") });
+  assert.equal(result.status, 0, result.stderr);
+  shown = JSON.parse(result.stdout);
+  assert.equal(shown.values.timeout, 120);
+  assert.equal(shown.sources.timeout.source, "--timeout");
+
+  result = invoke(workspace, ["--show-config", "all"], { home: path.join(workspace, "home") });
+  assert.equal(result.status, 0, result.stderr);
+  shown = JSON.parse(result.stdout);
   assert.equal(shown.values.timeout, 120);
   assert.equal(shown.sources.timeout.layer, "default");
+
+  result = invoke(workspace, ["--show-config", "invalid"], { home: path.join(workspace, "home") });
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /--show-config must be set or all/);
 });
 
 test("layered client configuration resolves files, environment, and CLI precedence", async () => {
