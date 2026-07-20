@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+import { ClipboardError, main } from "../lib/cpb-paste.mjs";
+
+main().catch((error) => {
+  process.stderr.write(`cpb-paste: ${error.message}\n`);
+  process.exitCode = error instanceof ClipboardError ? error.exitCode : 1;
+});
