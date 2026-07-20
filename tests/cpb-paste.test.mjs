@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -9,7 +11,7 @@ import {
   parseInvocation,
   renderClipboard,
   selectMime,
-} from "../lib/cpb-paste.mjs";
+} from "../bin/cpb-paste";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cpbPaste = path.join(root, "bin/cpb-paste");
@@ -194,4 +196,15 @@ test("cpb-paste --help does not require clipboard access or duplicate usage", ()
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /^Usage: cpb-paste/m);
   assert.equal((result.stderr.match(/^Usage: cpb-paste/gm) || []).length, 1);
+});
+
+test("cpb-paste runs through an installed-command symlink", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "cpb-paste symlink "));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const linkedCommand = path.join(directory, "cpb-paste");
+  await symlink(cpbPaste, linkedCommand);
+
+  const result = spawnSync(linkedCommand, ["--help"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /^Usage: cpb-paste/m);
 });

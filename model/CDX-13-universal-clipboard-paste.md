@@ -6,7 +6,7 @@ Rename `bin/clipboard-image` to `bin/cpb-paste` and make it a portable clipboard
 
 The existing image modes remain compatible under the new name. Text support is added as a first-class capability rather than bolted onto image extraction.
 
-Status: implemented in `bin/cpb-paste` and `lib/cpb-paste.mjs`.
+Status: implemented in the single executable file `bin/cpb-paste`.
 
 ## Proposed Interface
 

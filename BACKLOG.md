@@ -160,7 +160,7 @@ Design: `model/CDX-12-image-attachments.md`.
 
 ### CDX-13 cpb-paste Clipboard Utility
 
-Status: implemented as `bin/cpb-paste` with a testable shared core in `lib/cpb-paste.mjs`.
+Status: implemented as the single-file `bin/cpb-paste` utility.
 
 Delivered:
 

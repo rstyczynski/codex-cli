@@ -529,7 +529,7 @@ Run `codex-cli --help` for the authoritative option list for the installed scrip
 
 ## Clipboard utility
 
-`cpb-paste` is a standalone cross-platform reader for clipboard text and images. With no option it writes one raw selected representation to standard output, preferring an image when both image and text are available. Use an explicit mode when a script requires a particular representation:
+`cpb-paste` is a standalone, single-file cross-platform reader for clipboard text and images. With no option it writes one raw selected representation to standard output, preferring an image when both image and text are available. Use an explicit mode when a script requires a particular representation:
 
 ```bash
 cpb-paste                 # selected text or image bytes

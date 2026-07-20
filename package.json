@@ -10,10 +10,10 @@
     "cpb-paste": "bin/cpb-paste"
   },
   "scripts": {
-    "check": "node --check bin/codex-cli && node --check bin/cpb-paste && node --check lib/cpb-paste.mjs",
+    "check": "node --check bin/codex-cli && node --check bin/cpb-paste",
     "test": "npm run check && node --test tests/*.test.mjs",
     "test:parity": "node --check tests/parity.mjs && CODEX_PARITY=1 node --test tests/parity.mjs",
-    "test:coverage": "node --experimental-test-coverage --test-coverage-include=bin/codex-cli --test-coverage-include=lib/cpb-paste.mjs --test-coverage-lines=90 --test-coverage-branches=70 --test-coverage-functions=80 --test tests/*.test.mjs",
+    "test:coverage": "node --experimental-test-coverage --test-coverage-include=bin/codex-cli --test-coverage-include=bin/cpb-paste --test-coverage-lines=90 --test-coverage-branches=70 --test-coverage-functions=80 --test tests/*.test.mjs",
     "help": "node bin/codex-cli --help"
   }
 }
