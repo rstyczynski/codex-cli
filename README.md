@@ -10,6 +10,7 @@
 - [Broker mode](#broker-mode)
 - [Threads](#threads)
 - [Approvals and user input](#approvals-and-user-input)
+- [Client configuration](#client-configuration)
 - [Environment overrides](#environment-overrides)
 - [Timeouts, active turns, and diagnostics](#timeouts-active-turns-and-diagnostics)
 - [Model and Codex configuration](#model-and-codex-configuration)
@@ -17,31 +18,45 @@
 - [Agentic exit codes for scripts](#agentic-exit-codes-for-scripts)
   - [Control the exit code from the prompt](#control-the-exit-code-from-the-prompt)
 - [Input and output](#input-and-output)
+- [Image attachments](#image-attachments)
+- [Prompt attachment actions](#prompt-attachment-actions)
 - [Special-purpose modes](#special-purpose-modes)
   - [Direct mode](#direct-mode)
   - [Existing app-server socket](#existing-app-server-socket)
 - [Bash completion](#bash-completion)
 - [Local files and lifecycle](#local-files-and-lifecycle)
 - [Exit behavior](#exit-behavior)
+- [Clipboard utility](#clipboard-utility)
 
 ## Requirements
 
 - Node.js
 - The `codex` CLI installed and authenticated
 
+macOS and Linux support broker, direct, and existing Unix-socket transports.
+Native Windows supports broker mode through a workspace-scoped named pipe and
+direct mode through standard I/O. The managed app-server control socket is a
+Unix-socket transport, so on Windows use `--broker` or `--direct`; an explicit
+`--socket \\.\pipe\NAME` works when another process provides a compatible named
+pipe.
+
 Make the executable available on `PATH` by adding the repository's `bin/`
-directory or by copying `codex-cli` to a directory already on `PATH`. Run the
-requirements and option-discovery example from the repository root:
+directory or by installing this package. `codex-cli`, `cdx`, and `hiai` invoke
+the same client. On macOS or Linux, run the requirements and option-discovery
+example from the repository root:
 
 ```bash
 PATH="$PWD/bin:$PATH" ./examples/setup-and-help.sh
 ```
 
-The script is self-contained and includes bash completion. Copy `codex-cli` to any directory on `PATH`; the `codex` executable must also be available on `PATH` (or supplied with `--codex PATH`).
+The script is self-contained and includes Bash completion. When installed with
+npm, its command entries are available through the platform's normal launcher
+mechanism. The `codex` executable must also be available on `PATH` (or supplied
+with `--codex PATH`).
 
 ## Runnable examples
 
-The [`examples/`](examples/README.md) directory contains small, commented scripts for every capability described below. Start with `intro.sh`, then use the examples index to find a focused broker, thread, approval, configuration, output, transport, completion, lifecycle, or exit-code workflow.
+The [`examples/`](examples/README.md) directory contains small, commented scripts for every capability described below. Start with `intro.sh`, then use the examples index to find a focused broker, thread, approval, layered configuration, image attachment, prompt action, output, transport, completion, lifecycle, or exit-code workflow.
 
 ## Quick introduction
 
@@ -98,12 +113,73 @@ approval audit log and, when a terminal is attached, structured user input.
 ./examples/approvals-and-user-input.sh
 ```
 
-## Environment overrides
+## Client configuration
 
-Every declared long option automatically has an environment equivalent: remove
-the leading `--`, uppercase it, and replace hyphens with underscores.
-Environment values override command-line values, so this works for shell and
-CI defaults without adding one-off support for each flag.
+`codex-cli` loads optional JSON defaults in this order, with later sources
+overriding earlier scalar values:
+
+1. `~/.codex-cli/config.json`
+2. `<git-root>/.codex-cli/config.json`
+3. `<current-directory>/.codex-cli/config.json`
+4. The file named by `CDX_CONFIG`
+5. Repeated `--config PATH` files, left to right
+6. `CDXCLI_*` option variables
+7. Explicit command-line options
+
+`--config` and `CDX_CONFIG` paths are relative to the invocation directory.
+Paths inside a configuration file, including `state`, `approvalLog`, and
+`configJson`, are relative to that file. The Git-root and current-directory
+files are deduplicated when they are the same path. Missing automatic files are
+ignored; an explicit or existing invalid file stops the invocation before
+Codex is contacted.
+
+Use public camelCase option names. `threadParams` and `turnParams` shallow-merge
+by key; other values replace lower-priority values. Configuration cannot supply
+a prompt, standard input, help, completion, broker-serving flags, or another
+configuration path.
+
+```json
+{
+  "broker": true,
+  "new": true,
+  "timeout": 900,
+  "verbosity": "medium",
+  "threadParams": { "sandbox": "workspace-write" }
+}
+```
+
+Inspect the effective values, winning sources, and risk classifications without
+contacting Codex:
+
+```bash
+codex-cli --config ci.json --show-config
+```
+
+Run the self-contained CDX-11 example to see automatic user, Git-root, and
+current-directory configuration files followed by `CDX_CONFIG`, `--config`,
+`CDXCLI_*`, and command-line overrides. It creates only a temporary workspace
+and prints the resolved configuration; Codex is not contacted.
+
+```bash
+./examples/layered-config.sh
+```
+
+Before a new thread starts, a Git-root or current-directory configuration emits
+a stderr warning if its winning value enables approval automation, relaxes the
+sandbox, changes the Codex executable or IPC boundary, changes `cwd` outside
+the invocation workspace, or contains an unclassified raw app-server field.
+Warnings do not alter exit status and do not pollute JSON stdout. `--debug`
+also reports the winning source and classification for every effective field.
+
+### Environment overrides
+
+Most declared long options have an environment equivalent: remove the leading
+`--`, uppercase it, and replace hyphens with underscores. `CDX_CONFIG` is the
+exception for selecting one client configuration file.
+
+Environment values are lower priority than explicit command-line options. This
+is a compatibility change: a one-off command now overrides inherited shell or
+CI defaults without unsetting them first.
 
 ```bash
 ./examples/env-config.sh
@@ -122,7 +198,7 @@ waiting for a password prompt.
 
 ## Timeouts, active turns, and diagnostics
 
-The default timeout is 15 seconds. Set a longer time for work that is expected
+The default timeout is 120 seconds. Set a longer time for work that is expected
 to take longer.
 
 ```bash
@@ -169,6 +245,14 @@ The first implicit broker prompt also creates a thread, so it may use `--config-
 `--thread-params` supplies a JSON object to `thread/start`; `--turn-params` supplies one to `turn/start`. Values can be inline or loaded from `@FILE`; the options may be repeated and are shallow-merged from left to right.
 
 Sandbox overrides are guarded because current app-server versions do not enforce `sandbox` reliably when it is supplied only to `turn/start`. For a new thread, `--turn-params '{"sandbox":"read-only"}'` is promoted to `thread/start`. For an existing thread, set sandbox on a new thread with `--new --thread-params '{"sandbox":"read-only"}'`; turn-level sandbox changes are rejected rather than silently running with the previous thread permissions.
+
+To allow Codex to modify only the current workspace, create a new `workspace-write` thread:
+
+```bash
+codex-cli --broker --new \
+  --thread-params '{"sandbox":"workspace-write"}' \
+  --prompt "Apply the requested fix and run the focused tests."
+```
 
 Thread parameters and `--config-json` apply only while creating a thread. `--model` takes precedence over a raw `model` field. The utility owns `cwd`, `threadId`, and `input`; do not provide these inside raw parameter objects.
 
@@ -242,6 +326,106 @@ redirected or `--json` is active.
 
 Outside `--agentic-error-code`, `--json` emits newline-delimited raw app-server events instead of human-formatted output and is the lossless choice for scripts that need every protocol event. In agentic error-code mode it emits only the single validated result object described above.
 
+## Image attachments
+
+Attach one or more local images to the same user turn with repeatable `--image`
+options. The text prompt remains the first input item and images retain the
+order supplied on the command line:
+
+```bash
+codex-cli --broker --new \
+  --image screenshots/failure.png \
+  --image screenshots/expected.png \
+  --prompt "Compare these screenshots and explain the visible regression."
+```
+
+The example uses the committed sample
+[`examples/image-attachment-example.png`](examples/image-attachment-example.png)
+by default. Supply an argument or `IMAGE_PATH` to inspect a real image:
+
+```bash
+./examples/image-attachments.sh
+IMAGE_PATH="$PWD/examples/image-attachment-example.png" ./examples/image-attachments.sh
+```
+
+Each image must be a readable regular file, contain a supported image
+signature, and be no larger than 20 MiB. Paths resolve from the directory in
+which `codex-cli` is invoked, not from `--cwd`; the client canonicalizes them
+before use. It sends Codex 0.144.4's `turn/start` local-image input shape
+(`type: "localImage"`, `path`, `detail: "auto"`), so it neither recompresses
+the file nor encodes its bytes into the app-server request.
+
+Images work with broker, direct, and existing app-server socket modes. An
+image needs a positional prompt, `--prompt`, or `--stdin`; it cannot be used
+with broker lifecycle actions, completion output, configuration inspection,
+help, or the direct REPL. Image paths are deliberately not accepted from JSON
+client configuration, raw parameter objects, or `--config-json`.
+
+The broker advertises image support as `image-attachments-v1`. After upgrading
+`codex-cli`, restart any already-running broker once before sending `--image`
+turns:
+
+```bash
+codex-cli --broker stop
+codex-cli --broker start
+```
+
+An older broker is detected before the turn starts and reports this restart
+command instead of silently omitting the image.
+
+`CDXCLI_IMAGE` supplies one environment image for CI or wrapper scripts. It is
+prepended to repeatable command-line `--image` values. Under `--debug`, the
+client reports only the canonical path, detected MIME type, and byte size.
+Image bytes are never written to normal output, JSON output, debug output,
+broker metadata, or saved thread state.
+
+When a broker image turn times out, rerun the exact prompt with the same image
+paths and unchanged ordered file contents to reattach. The broker compares
+canonical paths and SHA-256 digests before it resumes a pending turn.
+
+## Prompt attachment actions
+
+Prompt actions are explicit markers interpreted by `codex-cli`. The first
+built-in action is `<clipboard>`, which inserts the currently selected
+clipboard representation at that exact point in the same user turn:
+
+```bash
+codex-cli --broker --new --prompt 'Explain <clipboard> image.'
+```
+
+For clipboard text, the marker becomes a normal text input item. For PNG,
+JPEG, WebP, or GIF content, it becomes a local image input item between the
+surrounding text items. `codex-cli` invokes its packaged `cpb-paste` helper
+exactly twice: first `--mime`, then `--text` or `--binary` for that MIME type.
+It does not execute shell substitutions, commands, or arbitrary angle-bracket
+content.
+
+Only `<clipboard>` is currently supported. Markers that match the action form
+`<[a-z][a-z0-9-]*>` but are not registered fail locally before clipboard,
+broker, or Codex access. Clipboard image bytes are stored only in an
+owner-only `.codex-cli/session/clipboard-*` file. Direct and socket clients
+remove it when they exit; a broker retains it until the broker exits, so the
+app-server can load the image asynchronously after acknowledging `turn/start`.
+Broker reattachment retains action SHA-256 digests, never clipboard bytes.
+
+Copy text or an image, then run the maintained read-only example:
+
+```bash
+./examples/prompt-attachment-actions.sh
+```
+
+After upgrading `codex-cli`, restart an already-running broker once before
+using prompt actions:
+
+```bash
+./bin/codex-cli --broker stop
+./bin/codex-cli --broker start
+```
+
+Run the repository copy explicitly as above, or put `./bin` first on `PATH`,
+so an older globally installed `codex-cli` does not forward `<clipboard>` as
+literal prompt text.
+
 ## Special-purpose modes
 
 Broker mode should be used for normal conversations and scripts. The following transports are add-ons for cases that need a different app-server lifecycle.
@@ -262,11 +446,19 @@ Enter `/exit` or an empty line to leave the REPL.
 ### Existing app-server socket
 
 Use the managed daemon or an explicit socket only when another process owns the
-app-server lifecycle. Pass the path of a Unix socket exposed by an app-server
-to the example:
+app-server lifecycle. On macOS and Linux, pass the path of a Unix socket
+exposed by an app-server to the example:
 
 ```bash
 ./examples/existing-socket.sh /path/to/app-server.sock
+```
+
+On Windows, managed daemon control sockets are unavailable. Use broker or
+direct mode, or pass a named pipe explicitly when another compatible
+app-server owns it:
+
+```powershell
+codex-cli --socket '\\.\pipe\codex-app-server' --new "Review the current change"
 ```
 
 ## Bash completion
@@ -284,11 +476,15 @@ name is not already installed.
 
 ## Local files and lifecycle
 
-Broker mode creates workspace-scoped files:
+Broker mode creates workspace-scoped files. On macOS and Linux these are:
 
 - `.codex-cli/codex-cli-broker.sock`: private Unix socket
 - `.codex-cli/codex-cli-broker.pid`: broker metadata
 - `.codex-cli/codex-cli.json`: selected thread and model state
+
+On Windows, the broker endpoint is a workspace-hashed private named pipe and
+the metadata file is `.codex-cli/broker-<hash>.pid`; the selected-thread state
+remains `.codex-cli/codex-cli.json`.
 
 ```bash
 ./examples/local-files-and-lifecycle.sh
@@ -330,3 +526,21 @@ summary. See [Control the exit code from the prompt](#control-the-exit-code-from
 for the full contract.
 
 Run `codex-cli --help` for the authoritative option list for the installed script version.
+
+## Clipboard utility
+
+`cpb-paste` is a standalone cross-platform reader for clipboard text and images. With no option it writes one raw selected representation to standard output, preferring an image when both image and text are available. Use an explicit mode when a script requires a particular representation:
+
+```bash
+cpb-paste                 # selected text or image bytes
+cpb-paste --text          # text as UTF-8
+cpb-paste --binary        # image bytes
+cpb-paste --base64        # image as Base64
+cpb-paste --mime          # selected representation MIME type
+cpb-paste --json          # every supported text/image representation
+```
+
+On macOS it uses the native pasteboard. On Windows it uses an STA PowerShell clipboard bridge. On Linux it uses `wl-paste` (Wayland) or `xclip` (X11).
+
+Use `<clipboard>` in a `codex-cli` prompt to translate the selected clipboard
+representation into a Codex text or image input item.

@@ -10,6 +10,11 @@
   - [CDX-4 Completion Fixes](#cdx-4-completion-fixes)
   - [CDX-5 App-Server Error Surfacing](#cdx-5-app-server-error-surfacing)
   - [CDX-9 Agentic Error Code Contract](#cdx-9-agentic-error-code-contract)
+  - [CDX-10 Codex Response Comparison](#cdx-10-codex-response-comparison)
+  - [CDX-11 Layered Client Configuration](#cdx-11-layered-client-configuration)
+  - [CDX-12 Image Attachments](#cdx-12-image-attachments)
+  - [CDX-13 cpb-paste Clipboard Utility](#cdx-13-cpb-paste-clipboard-utility)
+  - [CDX-14 Prompt Attachment Actions](#cdx-14-prompt-attachment-actions)
 - [Open](#open)
   - [CDX-6 Upstream Turn-Level Sandbox Enforcement](#cdx-6-upstream-turn-level-sandbox-enforcement)
   - [CDX-7 Install and Release Polish](#cdx-7-install-and-release-polish)
@@ -17,9 +22,9 @@
 
 ## Current State
 
-`codex-cli` is now a dependency-free (single file) Node.js terminal client for the local Codex app-server. It supports broker, direct, and managed socket modes; persistent broker threads; explicit thread selection and listing; approvals and user input; Bash completion; model completion; rich verbosity levels; debug diagnostics; JSONL output; agentic script exit codes; raw app-server parameter forwarding; and guarded sandbox handling.
+`codex-cli` is now a dependency-free (single file) Node.js terminal client for the local Codex app-server. It supports broker, direct, and managed socket modes; persistent broker threads; explicit thread selection and listing; approvals and user input; layered JSON client configuration; local PNG/JPEG/WebP/GIF attachments; explicit prompt attachment actions including `<clipboard>`; Bash completion; model completion; rich verbosity levels; debug diagnostics; JSONL output; agentic script exit codes; raw app-server parameter forwarding; and guarded sandbox handling.
 
-The active test suite covers CLI validation, broker lifecycle, thread resume, explicit not-loaded thread resume, direct mode, socket mode, WebSocket framing, Bash completion, output rendering, agentic result validation, app-server error forwarding, and sandbox parameter guarding.
+The active test suite covers CLI validation, configuration precedence and safety warnings, broker lifecycle, thread resume, explicit not-loaded thread resume, direct mode, socket mode, WebSocket framing, Bash completion, image attachment validation and transport parity, fail-closed clipboard prompt actions, output rendering, agentic result validation, app-server error forwarding, sandbox parameter guarding, and standalone clipboard text/image extraction.
 
 Verification command:
 
@@ -108,6 +113,79 @@ Delivered:
 Status: implemented as `--agentic-error-code`, with prompt instructions, turn output schema, strict result validation, reserved agentic statuses `0-15`, and wrapper/system statuses `16+`.
 
 Design: `model/CDX-9-prompt-to-script-exit-code-contract.md`.
+
+### CDX-10 Codex Response Comparison
+
+Status: implemented as the opt-in `npm run test:parity` integration suite.
+
+Delivered:
+
+- Compare fresh direct Codex and broker-mode `codex-cli` runs under equivalent read-only conditions.
+- Version representative arithmetic, workspace-reading, and detailed code-review prompts with observable criteria.
+- Record stdout, stderr, exit status, duration, workspace digests, environment metadata, and semantic rubric results under ignored `tests/results/parity/` artifacts.
+- Support focused runs through `CODEX_PARITY_CASE` and configurable command timeouts.
+
+Design: `model/CDX-10-codex-response-comparison.md`.
+
+### CDX-11 Layered Client Configuration
+
+Status: implemented with automatic user/Git/directory discovery, `CDX_CONFIG`,
+repeatable `--config`, source-aware `--show-config`, and CLI-over-environment
+precedence.
+
+Delivered:
+
+- Validate configuration JSON against public camelCase client option names.
+- Resolve configuration-relative paths from their declaring file.
+- Shallow-merge `threadParams` and `turnParams` while tracking winning sources.
+- Warn before thread creation when auto-discovered project settings widen authority or contain opaque raw fields.
+- Preserve clean JSON stdout and report effective sources through `--debug` and `--show-config`.
+
+Design: `model/CDX-11-layered-client-configuration.md`.
+
+### CDX-12 Image Attachments
+
+Status: implemented as repeatable `--image PATH` prompt input.
+
+Delivered:
+
+- Validate readable regular PNG, JPEG, WebP, and GIF files from content signatures, with a 20 MiB per-image limit.
+- Send Codex 0.144.4-compatible `localImage` turn input items through broker, direct, and existing socket transports.
+- Preserve `CDXCLI_IMAGE` then command-line image ordering without allowing image paths in JSON configuration.
+- Keep image bytes out of output, metadata, and saved state; debug output is limited to path, MIME type, and size.
+- Reattach timed-out broker turns only when the prompt, canonical paths, ordered image digests, and current files match.
+- Cover validation, ordering, direct/broker/socket transport parity, completion, output safety, and digest-aware reattachment with synthetic fixtures.
+
+Design: `model/CDX-12-image-attachments.md`.
+
+### CDX-13 cpb-paste Clipboard Utility
+
+Status: implemented as `bin/cpb-paste` with a testable shared core in `lib/cpb-paste.mjs`.
+
+Delivered:
+
+- Read clipboard text and images through native macOS, Windows, Wayland, and X11 adapters.
+- Stream the selected raw representation with no option; image wins when both forms exist.
+- Provide explicit `--text`, `--binary`, `--base64`, `--mime`, and `--json` output modes.
+- Keep prompt parsing and Codex app-server attachment handling outside the utility.
+- Test stream fidelity, mode errors, JSON, MIME selection, backend selection, and help behavior without a machine clipboard.
+
+Design: `model/CDX-13-universal-clipboard-paste.md`.
+
+### CDX-14 Prompt Attachment Actions
+
+Status: implemented with the built-in `<clipboard>` action.
+
+Delivered:
+
+- Parse and validate registered prompt markers before any clipboard, broker, or app-server access; unknown action-shaped markers fail closed.
+- Invoke the packaged `cpb-paste` helper as `--mime` followed by the matching `--text` or `--binary` operation.
+- Preserve ordered surrounding text and insert clipboard text or a Codex-compatible local image input item in direct, broker, and socket transports.
+- Store clipboard images in owner-only `.codex-cli/session/` files; direct/socket clients remove them on exit, brokers remove them on shutdown, and broker startup removes stale leftovers.
+- Retain only action digests for active broker-turn matching and keep clipboard bytes out of output, state, and broker metadata.
+- Cover text/image ordering, helper failures, MIME mismatch, cleanup, state redaction, and direct/broker/socket transport parity with fixture-driven tests.
+
+Design: `model/CDX-14-prompt-attachment-actions.md`.
 
 ## Open
 

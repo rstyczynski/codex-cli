@@ -8,9 +8,11 @@ import test from "node:test";
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 const cli = path.join(root, "bin/codex-cli");
 const fakeCodex = path.join(root, "tests/fixtures/fake-codex.mjs");
+const win32Platform = path.join(root, "tests/fixtures/platform-win32.cjs");
 
 function invoke(workspace, args, options = {}) {
-  return spawnSync(process.execPath, [cli, "--cwd", workspace, "--codex", fakeCodex, ...args], {
+  const nodeArgs = options.platform === "win32" ? ["--require", win32Platform, cli] : [cli];
+  return spawnSync(process.execPath, [...nodeArgs, "--cwd", workspace, "--codex", fakeCodex, ...args], {
     encoding: "utf8",
     timeout: 10000,
     input: options.input,
@@ -111,6 +113,32 @@ test("managed socket mode explains how to start a missing daemon", async () => {
   assert.match(result.stderr, /Start the managed server with: codex app-server daemon start/);
 });
 
+test("Windows directs users away from the unavailable managed Unix socket", async () => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli Windows transport "));
+
+  let result = invoke(workspace, ["--new", "prompt"], { platform: "win32" });
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /managed app-server socket mode is unavailable on Windows/);
+  assert.match(result.stderr, /--broker, --direct, or --socket/);
+
+  result = invoke(workspace, ["--direct", "--new", "Windows direct prompt"], { platform: "win32" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 1: Windows direct prompt/);
+});
+
+test("Windows broker configuration requires a named pipe", async () => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli Windows broker "));
+  let result = invoke(workspace, ["--broker", "status", "--broker-socket", "broker.sock"], { platform: "win32" });
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /--broker-socket must be a Windows named pipe/);
+
+  result = invoke(workspace, ["--broker", "status"], { platform: "win32" });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /\\\\\.\\pipe\\codex-cli-[0-9a-f]{16}/);
+});
+
 test("direct mode accepts positional and standard-input prompts", async () => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli input "));
@@ -122,6 +150,14 @@ test("direct mode accepts positional and standard-input prompts", async () => {
   result = invoke(workspace, ["--direct", "--new", "--stdin"], { input: "standard input prompt\n" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /reply 1: standard input prompt/);
+
+  result = invoke(workspace, ["--direct", "--new", "transient session metadata"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 1: transient session metadata/);
+
+  result = invoke(workspace, ["--direct", "--new", "transient interrupted"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 1: transient interrupted/);
 });
 
 test("agentic error-code mode maps validated outcomes and preserves system failures", async () => {

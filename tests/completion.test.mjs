@@ -129,7 +129,7 @@ test("sourcing registers codex-cli without replacing existing shell handlers", (
 
 test("option-name completion covers every public flag and both Bash-completion spellings", () => {
   const expected = [
-    "--socket", "--direct", "--broker", "--broker-socket", "--prompt", "--config-json",
+    "--socket", "--direct", "--broker", "--broker-socket", "--prompt", "--image", "--config", "--show-config", "--config-json",
     "--thread-params", "--turn-params", "--thread", "--new", "--state", "--model",
     "--clear-model", "--start-daemon", "--cwd", "--timeout", "--approval", "--approval-log",
     "--experimental-api", "--interactive", "--repl", "--interrupt-pending", "--verbosity", "--progress", "--debug", "--agentic-error-code", "--json",
@@ -174,6 +174,7 @@ test("file, directory, @FILE, and executable completion preserve spaces", async 
   const workspace = await temporaryDirectory(t, "codex completion files ");
   await writeFile(path.join(workspace, "config one.json"), "{}\n", "utf8");
   await writeFile(path.join(workspace, "config-two.json"), "{}\n", "utf8");
+  await writeFile(path.join(workspace, "image one.png"), "image\n", "utf8");
   await writeFile(path.join(workspace, "params one.json"), "{}\n", "utf8");
   await mkdir(path.join(workspace, "workspace one"));
   const executable = path.join(workspace, "codex-helper");
@@ -186,7 +187,11 @@ test("file, directory, @FILE, and executable completion preserve spaces", async 
     assert.deepEqual(new Set(result.replies), new Set(["config one.json", "config-two.json"]), flag);
   }
 
-  let result = completion(["codex-cli", "--cwd", "workspace"], { cwd: workspace });
+  let result = completion(["codex-cli", "--image", "image"], { cwd: workspace });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.replies, ["image one.png"]);
+
+  result = completion(["codex-cli", "--cwd", "workspace"], { cwd: workspace });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.replies, ["workspace one"]);
 

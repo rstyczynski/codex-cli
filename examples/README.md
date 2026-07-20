@@ -10,8 +10,9 @@ export PATH="$PWD/bin:$PATH"
 
 Most broker examples start a broker only when one is not already running and
 stop only the broker they started. Prompts are deliberately read-only unless
-the example is specifically demonstrating approvals. A real Codex turn is
-started, so the scripts require an authenticated `codex` CLI.
+the example is specifically demonstrating approvals. Examples that start a
+Codex turn require an authenticated `codex` CLI; the layered configuration
+example only inspects configuration and does not contact Codex.
 
 | README capability | Example | What to look for |
 | --- | --- | --- |
@@ -20,7 +21,10 @@ started, so the scripts require an authenticated `codex` CLI.
 | Broker mode | [`broker-mode.sh`](broker-mode.sh) | Start, continue, inspect, and clean up a broker |
 | Threads | [`threads.sh`](threads.sh) | Create, list, and explicitly select threads |
 | Approvals and user input | [`approvals-and-user-input.sh`](approvals-and-user-input.sh) | Approval policies, audit log, and interactive questions |
+| Client configuration | [`layered-config.sh`](layered-config.sh) | Inspect automatic files, overlays, environment, and CLI precedence |
 | Environment overrides | [`env-config.sh`](env-config.sh) | Configure a run with `CDXCLI_*` variables |
+| Image attachments | [`image-attachments.sh`](image-attachments.sh) | Attach the included sample PNG or a supplied local image to one read-only prompt |
+| Prompt attachment actions | [`prompt-attachment-actions.sh`](prompt-attachment-actions.sh) | Insert clipboard text or an image at `<clipboard>` in one read-only prompt |
 | Timeouts and diagnostics | [`timeouts-and-diagnostics.sh`](timeouts-and-diagnostics.sh) | Reattach after timeout, debug, and interrupt |
 | Model and Codex configuration | [`model-and-config.sh`](model-and-config.sh) | Model selection, config JSON, and raw parameters |
 | Agentic exit codes | [`agentic-exit-codes.sh`](agentic-exit-codes.sh) | Map task outcomes to shell status codes |

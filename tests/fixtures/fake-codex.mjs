@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const threads = new Map();
 const approvals = new Map();
@@ -109,6 +109,11 @@ input.on("line", (line) => {
       return response(id, { thread: { id: params.threadId, cwd: params.cwd, turns: [], status: { type: "notLoaded" } } });
     }
     if (!thread) return send({ jsonrpc: "2.0", id, error: { code: -32000, message: `thread not found: ${params.threadId}` } });
+    const transientMetadataTurn = thread.turns.find((turn) => turn.transientMetadataReads > 0);
+    if (transientMetadataTurn) {
+      transientMetadataTurn.transientMetadataReads -= 1;
+      return send({ jsonrpc: "2.0", id, error: { code: -32603, message: "thread-store internal error: failed to read session metadata rollout at /tmp/fake-rollout.jsonl is empty" } });
+    }
     const transientTurn = thread.turns.find((turn) => turn.transientInterruptedReads > 0);
     if (transientTurn) {
       transientTurn.transientInterruptedReads -= 1;
@@ -128,6 +133,20 @@ input.on("line", (line) => {
     const turn = { id: `turn-${nextTurn++}`, status: "inProgress", items: prompt.includes("prompt metadata unavailable") ? [] : [{ id: `user-${nextTurn}`, type: "userMessage", content: params.input ?? [] }] };
     thread.turns.push(turn);
     response(id, { turn });
+    if (prompt.includes("read image after acknowledgement")) return setTimeout(() => {
+      const image = params.input?.find((item) => item.type === "localImage");
+      try {
+        if (!image) throw new Error("image input was missing");
+        if (readFileSync(image.path).length === 0) throw new Error("image input was empty");
+      } catch (error) {
+        turn.status = "failed";
+        turn.error = { message: `could not read image after turn/start acknowledgement: ${error.message}` };
+        send({ method: "turn/completed", params: { threadId: thread.id, turn: { ...turn } } });
+        return;
+      }
+      complete(thread, turn, prompt);
+    }, 25);
+    if (prompt.includes("transient session metadata")) turn.transientMetadataReads = 1;
     if (prompt.includes("misclassified 401")) return setTimeout(() => {
       send({ method: "error", params: {
         threadId: thread.id,

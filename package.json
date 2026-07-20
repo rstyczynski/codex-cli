@@ -5,6 +5,8 @@
   "type": "module",
   "bin": {
     "codex-cli": "bin/codex-cli",
+    "cdx": "bin/codex-cli",
+    "hiai": "bin/codex-cli",
     "cpb-paste": "bin/cpb-paste"
   },
   "scripts": {

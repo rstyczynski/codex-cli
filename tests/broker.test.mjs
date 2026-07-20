@@ -9,6 +9,7 @@ import test from "node:test";
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 const cli = path.join(root, "bin/codex-cli");
 const fakeCodex = path.join(root, "tests/fixtures/fake-codex.mjs");
+const fakeClipboard = path.join(root, "tests/fixtures/fake-cpb-paste.mjs");
 
 function invoke(workspace, ...args) {
   return spawnSync(process.execPath, [cli, "--cwd", workspace, "--broker-socket", path.join(workspace, "broker.sock"), "--codex", fakeCodex, ...args], { encoding: "utf8", timeout: 10000, env: { ...process.env, FAKE_CODEX_TRACE: path.join(workspace, "fake-codex-trace.jsonl") } });
@@ -228,7 +229,7 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   result = invoke(workspace, "--broker", "status");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /"ready": true/);
-  assert.deepEqual(JSON.parse(result.stdout).capabilities, ["agentic-result-v1"]);
+  assert.deepEqual(JSON.parse(result.stdout).capabilities, ["agentic-result-v1", "image-attachments-v1", "prompt-attachment-actions-v1"]);
 
   result = invoke(workspace, "--broker", "stop");
   assert.equal(result.status, 0, result.stderr);
@@ -428,7 +429,18 @@ test("broker waits out a transient interrupted thread read", async (t) => {
   assert.match(result.stdout, /reply 1: transient interrupted/);
 });
 
-test("CDXCLI environment variables override their matching CLI options", async (t) => {
+test("broker retries a transient empty session metadata read", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli transient metadata "));
+  t.after(() => invoke(workspace, "--broker", "stop"));
+  let result = invoke(workspace, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--prompt", "transient session metadata");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 1: transient session metadata/);
+});
+
+test("explicit CLI options override their matching CDXCLI environment variables", async (t) => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli approval environment "));
   t.after(() => invoke(workspace, "--broker", "stop"));
@@ -442,8 +454,9 @@ test("CDXCLI environment variables override their matching CLI options", async (
     CdxCLI_TIMEOUT: "5",
   }, "--broker", "--new", "--approval", "decline", "--prompt", "command-line prompt");
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /\[accept\]/);
-  assert.match(result.stdout, /approve environment override/);
+  assert.doesNotMatch(result.stdout, /\[accept\]/);
+  assert.match(result.stdout, /command-line prompt/);
+  assert.doesNotMatch(result.stdout, /approve environment override/);
   result = invokeWithEnv(workspace, { CDXCLI_APPROVAL: "invalid" }, "--broker", "--prompt", "ignored");
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /CDXCLI_APPROVAL must be decline, accept, or accept-for-session/);
@@ -484,6 +497,34 @@ test("agentic mode rejects a legacy broker with restart guidance", async (t) => 
   assert.match(result.stderr, /running broker does not support --agentic-error-code/);
   assert.match(result.stderr, /broker stop.*broker start/);
   assert.equal(runRequests, 0, "the client must reject the stale broker before submitting a turn");
+});
+
+test("image attachments reject a broker that lacks image capability", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli legacy image broker "));
+  const socketPath = path.join(workspace, "broker.sock");
+  const imagePath = path.join(workspace, "image.png");
+  await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  let runRequests = 0;
+  const server = net.createServer((socket) => {
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) return;
+      const message = JSON.parse(buffer.slice(0, newline));
+      if (message.type === "run") runRequests += 1;
+      socket.end(`${JSON.stringify({ version: 1, type: "status", ready: true, pid: process.pid, instanceId: "legacy", active: false, capabilities: ["agentic-result-v1"] })}\n`);
+    });
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const result = await invokeAsync(workspace, "--broker", "--new", "--image", imagePath, "--prompt", "inspect image").done;
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /running broker does not support --image/);
+  assert.match(result.stderr, /broker stop.*broker start/);
+  assert.equal(runRequests, 0, "the client must reject the stale broker before submitting an image turn");
 });
 
 test("broker carries agentic outcomes without masking broker or app-server failures", async (t) => {
@@ -626,4 +667,38 @@ test("broker rejects malformed and incompatible protocol messages", async (t) =>
   result = invoke(workspace, "--broker", "--new", "--prompt", "failed turn");
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /simulated turn failure/);
+});
+
+test("current broker expands prompt actions sent by a legacy client request", async (t) => {
+  await Promise.all([chmod(fakeCodex, 0o755), chmod(fakeClipboard, 0o755)]);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli legacy prompt action "));
+  const socketPath = path.join(workspace, "broker.sock");
+  t.after(() => invoke(workspace, "--broker", "stop"));
+  const environment = {
+    NODE_ENV: "test",
+    CDXCLI_TEST_CLIPBOARD_HELPER: fakeClipboard,
+    FAKE_CLIPBOARD_TEXT: "legacy clipboard text",
+    FAKE_CLIPBOARD_TRACE: path.join(workspace, "clipboard-trace.log"),
+  };
+  let result = invokeWithEnv(workspace, environment, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+
+  const response = await brokerExchange(socketPath, `${JSON.stringify({
+    version: 1,
+    type: "run",
+    new: true,
+    cwd: workspace,
+    prompt: "before <clipboard> after",
+    approval: "decline",
+    timeout: 5,
+  })}\n`);
+  assert.equal(response.type, "thread");
+  const trace = await readTrace(workspace);
+  const turn = trace.find((message) => message.method === "turn/start");
+  assert.deepEqual(turn.params.input, [
+    { type: "text", text: "before ", text_elements: [] },
+    { type: "text", text: "legacy clipboard text", text_elements: [] },
+    { type: "text", text: " after", text_elements: [] },
+  ]);
+  assert.equal(await readFile(path.join(workspace, "clipboard-trace.log"), "utf8"), "--mime\n--text\n");
 });

@@ -9,8 +9,9 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { appendFile, chmod, lstat, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import net from "node:net";
+import { homedir } from "node:os";
 import path from "node:path";
 import { stdin, stdout, stderr } from "node:process";
 import { createInterface } from "node:readline/promises";
@@ -21,12 +22,15 @@ const usage = `Usage: codex-cli (--thread ID | --new) [options] [PROMPT]
 Send a prompt to a Codex app-server thread.
 
 Options:
-  --socket PATH       Unix socket exposed by the Codex app-server
+  --socket PATH       Unix socket or Windows named pipe exposed by the Codex app-server
   --direct            Run a direct Codex app-server connection over standard I/O
   --broker [ACTION]   Use broker mode, or run start, status, stop, or threads
   --broker-socket PATH
-                      Broker socket (default: .codex-cli/codex-cli-broker.sock)
+                      Broker socket (default: workspace socket or Windows named pipe)
   --prompt TEXT        Prompt text (alternative to positional PROMPT)
+  --image PATH         Attach a PNG, JPEG, WebP, or GIF (repeatable; max 20 MiB each)
+  --config PATH        Client configuration JSON file (repeatable)
+  --show-config        Print resolved client configuration and sources, then exit
   --config-json PATH   JSON object of Codex config overrides for a new thread
   --thread-params JSON Thread/start parameters as a JSON object or @FILE (repeatable)
   --turn-params JSON   Turn/start parameters as a JSON object or @FILE (repeatable)
@@ -37,7 +41,7 @@ Options:
   --clear-model        Stop overriding the model and use the Codex default
   --start-daemon       Start the managed app-server before connecting
   --cwd PATH           Workspace to use for this turn (default: current directory)
-  --timeout SECONDS    Maximum time to wait for turn completion (default: 15)
+  --timeout SECONDS    Maximum time to wait for turn completion (default: 120)
   --approval MODE      Approval policy: decline (default), accept, or accept-for-session
   --approval-log PATH  Append approval requests and decisions to a TOML audit log
   --experimental-api   Enable experimental app-server fields and methods
@@ -62,6 +66,7 @@ Examples:
   codex-cli --broker start
   codex-cli --broker threads
   codex-cli --broker --new --prompt "Review the current change"
+  codex-cli --broker --new --image failure.png --prompt "Explain this failure"
   codex-cli --broker --prompt "Continue the review"
   codex-cli --broker --agentic-error-code "Apply the fix and run tests"
 `;
@@ -69,12 +74,29 @@ Examples:
 const AGENTIC_SYSTEM_ERROR_EXIT_CODE = 70;
 const AGENTIC_CONTRACT_ERROR_EXIT_CODE = 72;
 const AGENTIC_RESERVED_EXIT_CODES = new Set([13]);
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const PACKAGED_CLIPBOARD_HELPER = fileURLToPath(new URL("./cpb-paste", import.meta.url));
+const CLIPBOARD_TEMP_PREFIX = "clipboard-";
 let agenticErrorCodeActive = false;
+const WINDOWS_NAMED_PIPE_PREFIX = "\\\\.\\pipe\\";
 
 function fail(message, exitCode = 2) {
   if (agenticErrorCodeActive && exitCode >= 0 && exitCode <= 15) exitCode = AGENTIC_SYSTEM_ERROR_EXIT_CODE;
   stderr.write(`codex-cli: ${message}\n`);
   process.exitCode = exitCode;
+}
+
+function isWindowsNamedPipe(value) {
+  return process.platform === "win32" && typeof value === "string" && value.toLowerCase().startsWith(WINDOWS_NAMED_PIPE_PREFIX.toLowerCase());
+}
+
+function resolveIpcEndpoint(cwd, value) {
+  return isWindowsNamedPipe(value) ? value : path.resolve(cwd, value);
+}
+
+function defaultCodexHome() {
+  return process.env.CODEX_HOME ?? path.join(homedir(), ".codex");
 }
 
 function environmentValue(name, environment = process.env) {
@@ -88,7 +110,8 @@ const OPTION_DEFINITIONS = [
   { flags: ["--help", "-h"], key: "help", kind: "boolean", environment: "HELP" },
   { flags: ["--socket"], key: "socket", kind: "value" }, { flags: ["--direct"], key: "direct", kind: "boolean" },
   { flags: ["--broker"], key: "broker", kind: "broker" }, { flags: ["--broker-serve"], key: "brokerServe", kind: "boolean", impliesBroker: true },
-  { flags: ["--broker-socket"], key: "brokerSocket", kind: "value" }, { flags: ["--prompt"], key: "prompt", kind: "append" },
+  { flags: ["--broker-socket"], key: "brokerSocket", kind: "value" }, { flags: ["--prompt"], key: "prompt", kind: "append" }, { flags: ["--image"], key: "images", kind: "append" },
+  { flags: ["--config"], key: "configSources", kind: "config-file", environment: false }, { flags: ["--show-config"], key: "showConfig", kind: "boolean", environment: false },
   { flags: ["--config-json"], key: "configJson", kind: "value" }, { flags: ["--thread-params"], key: "threadParamSources", kind: "append" },
   { flags: ["--turn-params"], key: "turnParamSources", kind: "append" }, { flags: ["--thread"], key: "thread", kind: "value", explicit: "threadExplicit" },
   { flags: ["--new"], key: "new", kind: "boolean" }, { flags: ["--state"], key: "state", kind: "value", explicit: "stateExplicit" },
@@ -107,6 +130,56 @@ const OPTION_DEFINITIONS = [
 ];
 const OPTION_BY_FLAG = new Map(OPTION_DEFINITIONS.flatMap((definition) => definition.flags.map((flag) => [flag, definition])));
 
+const RISK_LEVELS = new Set(["safe", "warn", "unclassified"]);
+const optionDefinition = (flag) => OPTION_BY_FLAG.get(flag);
+const CONFIGURATION_FIELDS = [
+  { key: "socket", definition: optionDefinition("--socket"), risk: "warn", pathValue: true },
+  { key: "direct", definition: optionDefinition("--direct"), risk: "safe" },
+  { key: "broker", definition: optionDefinition("--broker"), risk: "safe" },
+  { key: "brokerSocket", definition: optionDefinition("--broker-socket"), risk: "warn", pathValue: true },
+  { key: "configJson", definition: optionDefinition("--config-json"), risk: "safe", pathValue: true },
+  { key: "thread", definition: optionDefinition("--thread"), risk: "safe" },
+  { key: "new", definition: optionDefinition("--new"), risk: "safe" },
+  { key: "state", definition: optionDefinition("--state"), risk: "safe", pathValue: true },
+  { key: "model", definition: optionDefinition("--model"), risk: "safe" },
+  { key: "clearModel", definition: optionDefinition("--clear-model"), risk: "safe" },
+  { key: "startDaemon", definition: optionDefinition("--start-daemon"), risk: "safe" },
+  { key: "cwd", definition: optionDefinition("--cwd"), risk: "warn", pathValue: true },
+  { key: "timeout", definition: optionDefinition("--timeout"), risk: "safe" },
+  { key: "approval", definition: optionDefinition("--approval"), risk: "warn" },
+  { key: "approvalLog", definition: optionDefinition("--approval-log"), risk: "safe", pathValue: true },
+  { key: "experimentalApi", definition: optionDefinition("--experimental-api"), risk: "safe" },
+  { key: "interactive", definition: optionDefinition("--interactive"), risk: "safe" },
+  { key: "interruptPending", definition: optionDefinition("--interrupt-pending"), risk: "safe" },
+  { key: "verbosity", definition: optionDefinition("--verbosity"), risk: "safe" },
+  { key: "progress", definition: optionDefinition("--progress"), risk: "safe" },
+  { key: "debug", definition: optionDefinition("--debug"), risk: "safe" },
+  { key: "agenticErrorCode", definition: optionDefinition("--agentic-error-code"), risk: "safe" },
+  { key: "json", definition: optionDefinition("--json"), risk: "safe" },
+  { key: "codex", definition: optionDefinition("--codex"), risk: "warn" },
+  { key: "threadParams", kind: "params", optionKey: "threadParams", risk: "unclassified" },
+  { key: "turnParams", kind: "params", optionKey: "turnParams", risk: "unclassified" },
+];
+const CONFIGURATION_FIELD_BY_KEY = new Map(CONFIGURATION_FIELDS.map((field) => [field.key, field]));
+const RAW_PARAMETER_RISKS = {
+  threadParams: { sandbox: "warn", model: "safe", config: "unclassified" },
+  turnParams: { sandbox: "warn", model: "safe" },
+};
+
+function assertConfigurationRiskCatalog() {
+  for (const field of CONFIGURATION_FIELDS) {
+    if (!field.definition && field.kind !== "params") throw new Error(`configuration field ${field.key} has no option definition`);
+    if (!RISK_LEVELS.has(field.risk)) throw new Error(`configuration field ${field.key} has no risk classification`);
+  }
+  for (const [parameter, fields] of Object.entries(RAW_PARAMETER_RISKS)) {
+    for (const [field, risk] of Object.entries(fields)) {
+      if (!RISK_LEVELS.has(risk)) throw new Error(`raw configuration field ${parameter}.${field} has no risk classification`);
+    }
+  }
+}
+
+assertConfigurationRiskCatalog();
+
 function environmentName(definition) {
   return `CDXCLI_${(definition.environment ?? definition.flags[0].slice(2)).replaceAll("-", "_").toUpperCase()}`;
 }
@@ -117,43 +190,108 @@ function booleanValue(value, label) {
   throw new Error(`${label} must be true or false`);
 }
 
+function sourceDescription(source) {
+  if (!source || source.kind === "default") return "built-in default";
+  if (source.kind === "environment") return source.name;
+  if (source.kind === "command") return source.flag;
+  return source.path;
+}
+
+function optionLabel(definition, source) {
+  if (source.kind === "environment") return source.name;
+  if (source.kind === "configuration") return `configuration ${source.path} field ${source.configKey}`;
+  return definition.flags[0];
+}
+
+function configurationSource(kind, filePath) {
+  return { kind: "configuration", layer: kind, path: filePath };
+}
+
+function defaultSource() {
+  return { kind: "default" };
+}
+
+function setOptionSource(options, definition, source) {
+  options.optionSources[definition.key] = source;
+}
+
 function assignOption(options, definition, value, source) {
-  const label = source === "environment" ? environmentName(definition) : definition.flags[0];
-  if (definition.kind === "boolean") options[definition.key] = source === "environment" ? booleanValue(value, label) : true;
+  const label = optionLabel(definition, source);
+  if (definition.kind === "boolean") {
+    if (source.kind === "command") options[definition.key] = true;
+    else if (source.kind === "environment") options[definition.key] = booleanValue(value, label);
+    else {
+      if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+      options[definition.key] = value;
+    }
+  }
   else if (definition.kind === "broker") {
-    if (source === "environment") {
+    if (source.kind === "environment") {
       if (BROKER_ACTIONS.includes(value)) { options.broker = true; options.brokerAction = value; }
       else { options.broker = booleanValue(value, label); if (!options.broker) options.brokerAction = undefined; }
-    } else {
+    } else if (source.kind === "command") {
       options.broker = true;
       if (BROKER_ACTIONS.includes(value)) options.brokerAction = value;
+    } else if (typeof value === "boolean") {
+      options.broker = value;
+      if (!value) options.brokerAction = undefined;
+    } else if (typeof value === "string" && BROKER_ACTIONS.includes(value)) {
+      options.broker = true;
+      options.brokerAction = value;
+    } else {
+      throw new Error(`${label} must be a boolean or one of ${BROKER_ACTIONS.join(", ")}`);
     }
   } else if (definition.kind === "positive-number") {
+    if (source.kind === "configuration" && typeof value !== "number") throw new Error(`${label} must be a positive number of seconds`);
     const number = Number(value);
     if (!Number.isFinite(number) || number <= 0) throw new Error(`${label} must be a positive number of seconds`);
     options[definition.key] = number;
   } else if (definition.kind === "approval") {
+    if (typeof value !== "string") throw new Error(`${label} must be decline, accept, or accept-for-session`);
     if (!["decline", "accept", "accept-for-session"].includes(value)) throw new Error(`${label} must be decline, accept, or accept-for-session`);
     options[definition.key] = value;
   } else if (definition.kind === "verbosity") {
+    if (typeof value !== "string") throw new Error(`${label} must be low, medium, or high`);
     if (!["low", "medium", "high"].includes(value)) throw new Error(`${label} must be low, medium, or high`);
     options[definition.key] = value;
   } else if (definition.kind === "append") {
-    options[definition.key] = source === "environment" ? [value] : [...options[definition.key], value];
-  } else options[definition.key] = value;
+    const entry = { value, source };
+    if (source.kind === "environment") options[definition.key] = [entry];
+    else if (source.kind === "command") {
+      if (!options.commandOptionKeys.has(definition.key)) {
+        options.commandOptionKeys.add(definition.key);
+        if (definition.key === "prompt") options[definition.key] = [];
+      }
+      options[definition.key].push(entry);
+    } else options[definition.key] = [...options[definition.key], entry];
+  } else if (definition.kind === "config-file") {
+    options.configSources.push(value);
+  } else {
+    if (source.kind === "configuration" && typeof value !== "string") throw new Error(`${label} must be a string`);
+    options[definition.key] = value;
+  }
   if (definition.impliesBroker && options[definition.key]) options.broker = true;
-  if (definition.explicit) options[definition.explicit] = true;
+  if (!["append", "config-file"].includes(definition.kind)) setOptionSource(options, definition, source);
+  if (definition.explicit && source.kind === "command") options[definition.explicit] = true;
 }
 
 function applyEnvironmentOverrides(options, environment = process.env) {
   for (const definition of OPTION_DEFINITIONS) {
+    if (definition.environment === false) continue;
     const value = environmentValue(environmentName(definition), environment);
-    if (value !== undefined) assignOption(options, definition, value, "environment");
+    if (value !== undefined) assignOption(options, definition, value, { kind: "environment", name: environmentName(definition) });
   }
 }
 
-function parseArgs(argv) {
-  const options = { cwd: process.cwd(), json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, progress: true, debug: false, agenticErrorCode: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 15, approval: "decline", prompt: [], threadParamSources: [], turnParamSources: [] };
+function createDefaultOptions(invocationCwd) {
+  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, progress: true, debug: false, agenticErrorCode: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
+  for (const field of CONFIGURATION_FIELDS) {
+    if (field.definition) options.optionSources[field.definition.key] = defaultSource();
+  }
+  return options;
+}
+
+function parseArgs(argv, options = createDefaultOptions(process.cwd())) {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const definition = OPTION_BY_FLAG.get(argument);
@@ -162,15 +300,27 @@ function parseArgs(argv) {
       options.prompt.push(argument);
       continue;
     }
-    if (definition.kind === "boolean") assignOption(options, definition, undefined, "command");
-    else if (definition.kind === "broker") assignOption(options, definition, BROKER_ACTIONS.includes(argv[index + 1]) ? argv[++index] : undefined, "command");
+    const source = { kind: "command", flag: argument };
+    if (definition.kind === "boolean") assignOption(options, definition, undefined, source);
+    else if (definition.kind === "broker") assignOption(options, definition, BROKER_ACTIONS.includes(argv[index + 1]) ? argv[++index] : undefined, source);
     else {
       const value = argv[++index];
       if (!value) throw new Error(`${argument} requires a value`);
-      assignOption(options, definition, value, "command");
+      assignOption(options, definition, value, source);
     }
   }
   return options;
+}
+
+function configurationBootstrap(argv, invocationCwd) {
+  const configPaths = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== "--config") continue;
+    const value = argv[++index];
+    if (!value) throw new Error("--config requires a value");
+    configPaths.push(path.resolve(invocationCwd, value));
+  }
+  return configPaths;
 }
 
 function agenticModeRequested(argv, environment = process.env) {
@@ -241,13 +391,101 @@ function isJsonObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function configurationError(source, message) {
+  return new Error(`configuration file ${source.path}: ${message}`);
+}
+
+function resolveConfigurationPath(value, source) {
+  if (typeof value !== "string" || isWindowsNamedPipe(value)) return value;
+  return path.resolve(path.dirname(source.path), value);
+}
+
+function mergeConfigurationParams(options, field, value, source) {
+  if (!isJsonObject(value)) throw configurationError(source, `${field.key} must contain a JSON object`);
+  if (field.optionKey === "threadParams") options.threadParamsConfigured = true;
+  options[field.optionKey] = { ...options[field.optionKey], ...value };
+  for (const name of Object.keys(value)) options.rawParameterSources[field.optionKey][name] = source;
+}
+
+function applyConfigurationObject(options, value, source) {
+  if (!isJsonObject(value)) throw configurationError(source, "must contain a JSON object");
+  for (const [key, rawValue] of Object.entries(value)) {
+    const field = CONFIGURATION_FIELD_BY_KEY.get(key);
+    if (!field) throw configurationError(source, `unknown configuration key: ${key}`);
+    if (field.kind === "params") {
+      mergeConfigurationParams(options, field, rawValue, { ...source, configKey: key });
+      continue;
+    }
+    const fieldSource = { ...source, configKey: key };
+    const resolvedValue = field.pathValue ? resolveConfigurationPath(rawValue, fieldSource) : rawValue;
+    assignOption(options, field.definition, resolvedValue, fieldSource);
+  }
+}
+
+async function loadConfigurationFile(options, filePath, source, optional = false) {
+  let text;
+  try { text = await readFile(filePath, "utf8"); }
+  catch (error) {
+    if (optional && error.code === "ENOENT") return;
+    throw configurationError(source, `cannot read: ${error.message}`);
+  }
+  let value;
+  try { value = JSON.parse(text); }
+  catch (error) { throw configurationError(source, `must contain valid JSON: ${error.message}`); }
+  applyConfigurationObject(options, value, source);
+}
+
+function findGitRoot(cwd) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    try {
+      const child = spawn("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { stdio: ["ignore", "pipe", "ignore"] });
+      let output = "";
+      child.stdout.setEncoding("utf8").on("data", (chunk) => { output += chunk; });
+      child.once("error", () => finish(undefined));
+      child.once("close", (code) => finish(code === 0 && output.trim() ? path.resolve(output.trim()) : undefined));
+    } catch { finish(undefined); }
+  });
+}
+
+async function loadLayeredConfiguration(options, invocationCwd, configPaths, environment = process.env) {
+  const loadedAutomaticPaths = new Set();
+  const loadAutomatic = async (filePath, layer) => {
+    const resolved = path.resolve(filePath);
+    if (loadedAutomaticPaths.has(resolved)) return;
+    loadedAutomaticPaths.add(resolved);
+    await loadConfigurationFile(options, resolved, configurationSource(layer, resolved), true);
+  };
+
+  await loadAutomatic(path.join(homedir(), ".codex-cli", "config.json"), "auto-home");
+  const gitRoot = await findGitRoot(invocationCwd);
+  if (gitRoot) await loadAutomatic(path.join(gitRoot, ".codex-cli", "config.json"), "auto-git");
+  await loadAutomatic(path.join(invocationCwd, ".codex-cli", "config.json"), "auto-directory");
+
+  const environmentConfig = environmentValue("CDX_CONFIG", environment);
+  if (environmentConfig !== undefined) {
+    const filePath = path.resolve(invocationCwd, environmentConfig);
+    await loadConfigurationFile(options, filePath, configurationSource("environment-config", filePath));
+  }
+  for (const filePath of configPaths) {
+    await loadConfigurationFile(options, filePath, configurationSource("explicit-config", filePath));
+  }
+}
+
 async function loadJsonObjectOptions(flag, sources, cwd) {
   let result = {};
-  for (const source of sources) {
-    let text = source;
-    if (source.startsWith("@")) {
-      if (source.length === 1) throw new Error(`${flag} @FILE requires a file path`);
-      const filePath = path.resolve(cwd, source.slice(1));
+  const resultSources = {};
+  for (const entry of sources) {
+    const source = typeof entry === "string" ? { value: entry, source: { kind: "command", flag } } : entry;
+    let text = source.value;
+    if (text.startsWith("@")) {
+      if (text.length === 1) throw new Error(`${flag} @FILE requires a file path`);
+      const filePath = path.resolve(cwd, text.slice(1));
       try { text = await readFile(filePath, "utf8"); }
       catch (error) { throw new Error(`cannot read ${flag} file at ${filePath}: ${error.message}`); }
     }
@@ -256,8 +494,27 @@ async function loadJsonObjectOptions(flag, sources, cwd) {
     catch (error) { throw new Error(`${flag} must be valid JSON: ${error.message}`); }
     if (!isJsonObject(value)) throw new Error(`${flag} must contain a JSON object`);
     result = { ...result, ...value };
+    for (const key of Object.keys(value)) resultSources[key] = source.source;
   }
-  return result;
+  return { value: result, sources: resultSources };
+}
+
+async function materializeRawParameters(options) {
+  const threadParams = await loadJsonObjectOptions("--thread-params", options.threadParamSources, options.cwd);
+  const turnParams = await loadJsonObjectOptions("--turn-params", options.turnParamSources, options.cwd);
+  options.threadParams = { ...options.threadParams, ...threadParams.value };
+  options.turnParams = { ...options.turnParams, ...turnParams.value };
+  Object.assign(options.rawParameterSources.threadParams, threadParams.sources);
+  Object.assign(options.rawParameterSources.turnParams, turnParams.sources);
+  if (options.configJson) {
+    const configPath = path.resolve(options.cwd, options.configJson);
+    const configOverrides = await loadJsonObjectOptions("--config-json", [{ value: `@${configPath}`, source: options.optionSources.configJson }], options.cwd);
+    if (options.threadParams.config !== undefined && !isJsonObject(options.threadParams.config)) throw new Error("--thread-params config must be a JSON object when used with --config-json");
+    const configSource = options.rawParameterSources.threadParams.config ?? options.optionSources.configJson;
+    options.threadParams.config = { ...configOverrides.value, ...(options.threadParams.config ?? {}) };
+    options.rawParameterSources.threadParams.config = configSource;
+  }
+  options.threadParamsSpecified = options.threadParamsConfigured || options.threadParamSources.length > 0 || Object.keys(options.threadParams).length > 0 || Boolean(options.configJson);
 }
 
 function rejectManagedParams(flag, params, managed) {
@@ -281,8 +538,90 @@ function normalizeSandboxParams(options) {
     throw new Error("--turn-params sandbox conflicts with --thread-params sandbox");
   }
   options.threadParams = { ...(options.threadParams ?? {}), sandbox: options.turnParams.sandbox };
+  if (options.rawParameterSources) {
+    options.rawParameterSources.threadParams.sandbox = options.rawParameterSources.turnParams.sandbox;
+    delete options.rawParameterSources.turnParams.sandbox;
+  }
   const { sandbox: _sandbox, ...turnParams } = options.turnParams;
   options.turnParams = turnParams;
+}
+
+function isAutoProjectConfiguration(source) {
+  return source?.kind === "configuration" && ["auto-git", "auto-directory"].includes(source.layer);
+}
+
+function pathIsOutside(directory, candidate) {
+  if (typeof candidate !== "string") return false;
+  if (isWindowsNamedPipe(candidate)) return true;
+  const relative = path.relative(directory, path.resolve(candidate));
+  return relative === "" ? false : relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+}
+
+function configurationWarnings(options) {
+  const warnings = [];
+  const add = (message, source) => {
+    if (isAutoProjectConfiguration(source)) warnings.push(`new thread uses ${message} from ${sourceDescription(source)}`);
+  };
+  const approvalSource = options.optionSources.approval;
+  if (["accept", "accept-for-session"].includes(options.approval)) add(`approval=${options.approval}`, approvalSource);
+  const codexSource = options.optionSources.codex;
+  if (options.codex !== "codex") add(`codex=${options.codex}`, codexSource);
+  const socketSource = options.optionSources.socket;
+  if (pathIsOutside(options.cwd, options.socket)) add(`socket=${options.socket}`, socketSource);
+  const brokerSocketSource = options.optionSources.brokerSocket;
+  if (pathIsOutside(options.cwd, options.brokerSocket)) add(`brokerSocket=${options.brokerSocket}`, brokerSocketSource);
+  const cwdSource = options.optionSources.cwd;
+  if (pathIsOutside(options.invocationCwd, options.cwd)) add(`cwd=${options.cwd}`, cwdSource);
+
+  for (const parameter of ["threadParams", "turnParams"]) {
+    for (const [key, value] of Object.entries(options[parameter] ?? {})) {
+      const source = options.rawParameterSources[parameter][key];
+      if (!isAutoProjectConfiguration(source)) continue;
+      const risk = RAW_PARAMETER_RISKS[parameter][key] ?? "unclassified";
+      if (risk === "warn" && key === "sandbox" && ["workspace-write", "danger-full-access"].includes(value)) add(`${parameter}.${key}=${value}`, source);
+      else if (risk === "unclassified") add(`unclassified ${parameter}.${key}`, source);
+    }
+  }
+  return [...new Set(warnings)];
+}
+
+function configurationSourceRecord(source, risk) {
+  return { source: sourceDescription(source), layer: source?.layer ?? source?.kind ?? "default", risk };
+}
+
+function resolvedConfiguration(options) {
+  const values = {};
+  const sources = {};
+  for (const field of CONFIGURATION_FIELDS) {
+    if (field.kind === "params") {
+      values[field.key] = options[field.optionKey];
+      sources[field.key] = Object.fromEntries(Object.keys(options[field.optionKey]).map((key) => [key, configurationSourceRecord(
+        options.rawParameterSources[field.optionKey][key] ?? defaultSource(),
+        RAW_PARAMETER_RISKS[field.optionKey][key] ?? "unclassified",
+      )]));
+    } else {
+      values[field.key] = options[field.definition.key] ?? null;
+      sources[field.key] = configurationSourceRecord(options.optionSources[field.definition.key] ?? defaultSource(), field.risk);
+    }
+  }
+  return { values, sources };
+}
+
+function emitConfigurationDebug(options) {
+  if (!options.debug) return;
+  const configuration = resolvedConfiguration(options);
+  for (const field of CONFIGURATION_FIELDS) {
+    if (field.kind === "params") {
+      for (const [key, source] of Object.entries(configuration.sources[field.key])) stderr.write(`codex-cli: debug: config ${field.key}.${key} from ${source.source} (${source.risk})\n`);
+    } else {
+      const source = configuration.sources[field.key];
+      stderr.write(`codex-cli: debug: config ${field.key} from ${source.source} (${source.risk})\n`);
+    }
+  }
+}
+
+function emitConfigurationWarnings(warnings) {
+  for (const warning of warnings) stderr.write(`codex-cli: warning: ${warning}\n`);
 }
 
 function hasModelOverride(options) {
@@ -327,6 +666,247 @@ async function validateWorkspace(workspace) {
   }
 }
 
+function imageMimeFromBytes(bytes) {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 6 && ["GIF87a", "GIF89a"].includes(bytes.subarray(0, 6).toString("ascii"))) return "image/gif";
+  if (bytes.length >= 12 && bytes.subarray(0, 4).equals(Buffer.from("RIFF")) && bytes.subarray(8, 12).equals(Buffer.from("WEBP"))) return "image/webp";
+  return undefined;
+}
+
+function localImageInput(image) {
+  return { type: "localImage", path: image.path, detail: "auto" };
+}
+
+function textInput(text) {
+  return { type: "text", text, text_elements: [] };
+}
+
+function turnInput(prompt, images = []) {
+  return [textInput(prompt), ...images.map(localImageInput)];
+}
+
+function imageDescription(image) {
+  return `${image.path} (${image.mime}, ${image.size} bytes)`;
+}
+
+async function prepareImageAttachments(sources, invocationCwd) {
+  const images = [];
+  for (const source of sources) {
+    const suppliedPath = typeof source === "string" ? source : source?.value;
+    if (typeof suppliedPath !== "string" || !suppliedPath) throw new Error("--image requires a path");
+    const candidate = path.resolve(invocationCwd, suppliedPath);
+    let initial;
+    try { initial = await stat(candidate); }
+    catch (error) {
+      if (error.code === "ENOENT") throw new Error(`image file does not exist: ${candidate}`);
+      throw new Error(`cannot inspect image file ${candidate}: ${error.message}`);
+    }
+    if (!initial.isFile()) throw new Error(`image path is not a regular file: ${candidate}`);
+    if (initial.size === 0) throw new Error(`image file is empty: ${candidate}`);
+    if (initial.size > MAX_IMAGE_BYTES) throw new Error(`image file exceeds the ${MAX_IMAGE_BYTES / (1024 * 1024)} MiB limit: ${candidate}`);
+
+    let handle;
+    let contents;
+    try {
+      handle = await open(candidate, "r");
+      contents = await handle.readFile();
+    } catch (error) {
+      throw new Error(`cannot read image file ${candidate}: ${error.message}`);
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+    try {
+      if (contents.length === 0) throw new Error(`image file is empty: ${candidate}`);
+      if (contents.length > MAX_IMAGE_BYTES) throw new Error(`image file exceeds the ${MAX_IMAGE_BYTES / (1024 * 1024)} MiB limit: ${candidate}`);
+      const mime = imageMimeFromBytes(contents);
+      if (!mime) throw new Error(`unsupported image type (use PNG, JPEG, WebP, or GIF): ${candidate}`);
+      let resolvedPath;
+      try { resolvedPath = realpathSync(candidate); }
+      catch (error) { throw new Error(`cannot resolve image file ${candidate}: ${error.message}`); }
+      images.push({
+        path: resolvedPath,
+        mime,
+        size: contents.length,
+        digest: createHash("sha256").update(contents).digest("hex"),
+      });
+    } finally {
+      contents.fill(0);
+    }
+  }
+  return images;
+}
+
+function imageExtension(mime) {
+  return { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" }[mime];
+}
+
+function promptActionParts(prompt) {
+  const parts = [];
+  const marker = /<([a-z][a-z0-9-]*)>/g;
+  let offset = 0;
+  for (let match; (match = marker.exec(prompt));) {
+    if (!PROMPT_ACTIONS.has(match[1])) throw new Error(`unknown prompt action <${match[1]}>; supported actions: ${[...PROMPT_ACTIONS.keys()].map((action) => `<${action}>`).join(", ")}`);
+    if (match.index > offset) parts.push({ type: "text", text: prompt.slice(offset, match.index) });
+    parts.push({ type: "action", action: match[1] });
+    offset = marker.lastIndex;
+  }
+  if (offset < prompt.length) parts.push({ type: "text", text: prompt.slice(offset) });
+  return parts;
+}
+
+function appendPromptText(parts, text) {
+  const copy = parts.map((part) => ({ ...part }));
+  const last = copy.at(-1);
+  if (last?.type === "text") last.text += text;
+  else copy.push({ type: "text", text });
+  return copy;
+}
+
+function promptPartsFor(userPrompt, agenticErrorCode) {
+  const parts = promptActionParts(userPrompt);
+  return agenticErrorCode ? appendPromptText(parts, `\n\n${AGENTIC_RESULT_INSTRUCTIONS}`) : parts;
+}
+
+function validatePromptParts(parts) {
+  if (!Array.isArray(parts) || parts.length === 0) throw new Error("broker prompt parts are required");
+  for (const part of parts) {
+    if (!isJsonObject(part)) throw new Error("broker prompt part must be an object");
+    if (part.type === "text" && typeof part.text === "string") continue;
+    if (part.type === "action" && PROMPT_ACTIONS.has(part.action)) continue;
+    throw new Error("broker prompt action is unsupported");
+  }
+}
+
+function clipboardHelperPath() {
+  // This fixture override is deliberately undocumented and only used by tests.
+  return process.env.NODE_ENV === "test" ? process.env.CDXCLI_TEST_CLIPBOARD_HELPER ?? PACKAGED_CLIPBOARD_HELPER : PACKAGED_CLIPBOARD_HELPER;
+}
+
+function captureProcess(command, args) {
+  return new Promise((resolve) => {
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
+    child.once("error", (error) => resolve({ stdout: Buffer.concat(stdoutChunks), stderr: Buffer.concat(stderrChunks), error }));
+    child.once("close", (code) => resolve({ code, stdout: Buffer.concat(stdoutChunks), stderr: Buffer.concat(stderrChunks) }));
+  });
+}
+
+function clipboardFailure(result) {
+  if (result.error) return result.error.message;
+  const detail = result.stderr?.toString("utf8").trim();
+  return detail || `helper exited with status ${result.code ?? "unknown"}`;
+}
+
+async function readClipboardHelper(mode) {
+  const result = await captureProcess(process.execPath, [clipboardHelperPath(), mode]);
+  if (result.error || result.code !== 0) throw new Error(`clipboard action failed: ${clipboardFailure(result)}`);
+  return result.stdout;
+}
+
+async function cleanupTemporaryAttachments(paths) {
+  await Promise.all(paths.map((filePath) => unlinkIfPresent(filePath)));
+}
+
+function clipboardSessionDirectory(workspace) {
+  return path.join(workspace, ".codex-cli", "session");
+}
+
+async function cleanupClipboardTemporaryFiles(workspace) {
+  const directory = clipboardSessionDirectory(workspace);
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); }
+  catch (error) { if (error.code === "ENOENT") return; throw error; }
+  await Promise.all(entries
+    .filter((entry) => entry.isFile() && entry.name.startsWith(CLIPBOARD_TEMP_PREFIX))
+    .map((entry) => unlinkIfPresent(path.join(directory, entry.name))));
+}
+
+async function readClipboardAction(workspace) {
+  const reportedMime = (await readClipboardHelper("--mime")).toString("utf8").trim().toLowerCase();
+  if (reportedMime === "text/plain") {
+    const data = await readClipboardHelper("--text");
+    const digest = createHash("sha256").update(data).digest("hex");
+    const text = data.toString("utf8");
+    data.fill(0);
+    return { input: [textInput(text)], digest: `text:${digest}`, temporaryPaths: [] };
+  }
+  if (!IMAGE_MIMES.has(reportedMime)) throw new Error(`clipboard action returned unsupported MIME type: ${reportedMime || "(empty)"}`);
+
+  const data = await readClipboardHelper("--binary");
+  let temporaryPath;
+  try {
+    if (data.length === 0) throw new Error(`clipboard action returned an empty ${reportedMime} image`);
+    if (data.length > MAX_IMAGE_BYTES) throw new Error(`clipboard image exceeds the ${MAX_IMAGE_BYTES / (1024 * 1024)} MiB limit`);
+    const detectedMime = imageMimeFromBytes(data);
+    if (!detectedMime || detectedMime !== reportedMime) throw new Error(`clipboard image does not match MIME type ${reportedMime}`);
+    const directory = clipboardSessionDirectory(workspace);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    temporaryPath = path.join(directory, `${CLIPBOARD_TEMP_PREFIX}${randomBytes(16).toString("hex")}.${imageExtension(reportedMime)}`);
+    await writeFile(temporaryPath, data, { encoding: undefined, mode: 0o600, flag: "wx" });
+    const [image] = await prepareImageAttachments([temporaryPath], workspace);
+    return { input: [localImageInput(image)], digest: `image:${image.digest}`, temporaryPaths: [image.path] };
+  } catch (error) {
+    if (temporaryPath) await unlinkIfPresent(temporaryPath);
+    throw error;
+  } finally {
+    data.fill(0);
+  }
+}
+
+const PROMPT_ACTIONS = new Map([["clipboard", readClipboardAction]]);
+
+async function resolvePromptInput(parts, images, workspace) {
+  const input = [];
+  const actionDigests = [];
+  const temporaryPaths = [];
+  try {
+    for (const part of parts) {
+      if (part.type === "text") input.push(textInput(part.text));
+      else {
+        const result = await PROMPT_ACTIONS.get(part.action)(workspace);
+        input.push(...result.input);
+        actionDigests.push(result.digest);
+        temporaryPaths.push(...result.temporaryPaths);
+      }
+    }
+    input.push(...images.map(localImageInput));
+    return { input, actionDigests, temporaryPaths };
+  } catch (error) {
+    await cleanupTemporaryAttachments(temporaryPaths);
+    throw error;
+  }
+}
+
+function validateBrokerImageAttachment(image) {
+  if (!isJsonObject(image)) throw new Error("broker image must be an object");
+  if (typeof image.path !== "string" || !path.isAbsolute(image.path)) throw new Error("broker image path must be absolute");
+  if (!IMAGE_MIMES.has(image.mime)) throw new Error("broker image MIME type is unsupported");
+  if (!Number.isInteger(image.size) || image.size <= 0 || image.size > MAX_IMAGE_BYTES) throw new Error("broker image size is invalid");
+  if (typeof image.digest !== "string" || !/^[a-f0-9]{64}$/.test(image.digest)) throw new Error("broker image digest is invalid");
+}
+
+function sameImageAttachments(left, right) {
+  return left.length === right.length && left.every((image, index) => image.path === right[index].path && image.digest === right[index].digest);
+}
+
+function sameTurnInput(left, right) {
+  return left.prompt === right.prompt && sameImageAttachments(left.images ?? [], right.images ?? []) && JSON.stringify(left.actionDigests ?? []) === JSON.stringify(right.actionDigests ?? []);
+}
+
+function validateImageInvocation(options) {
+  if (!options.images.length) return;
+  if (options.help) throw new Error("--image cannot be used with --help");
+  if (options.showConfig) throw new Error("--image cannot be used with --show-config");
+  if (options.bashCompletion || options.completionModels || options.completionCachedModels) throw new Error("--image cannot be used with completion output");
+  if (options.brokerServe) throw new Error("--image cannot be used while serving a broker");
+  if (options.brokerAction) throw new Error(`--image cannot be used with --broker ${options.brokerAction}`);
+  if (options.repl) throw new Error("--image cannot be used with --repl");
+}
+
 function run(command, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: "inherit" });
@@ -337,7 +917,7 @@ function run(command, args) {
 
 async function promptFor(options) {
   if (options.stdin) return readAll(stdin);
-  return options.prompt.join(" ");
+  return options.prompt.map((entry) => typeof entry === "string" ? entry : entry.value).join(" ");
 }
 
 function readAll(stream) {
@@ -632,12 +1212,12 @@ function bashCompletionScript(options) {
     "    --verbosity) _codex_cli_words 'low medium high' \"$cur\"; return ;;",
     "    --broker) if [[ $cur != -* ]]; then _codex_cli_words 'start status stop threads' \"$cur\"; return; fi ;;",
     "    --cwd) _codex_cli_compgen -d \"$cur\"; return ;;",
-    "    --socket|--broker-socket|--state|--approval-log|--config-json) _codex_cli_compgen -f \"$cur\"; return ;;",
+    "    --socket|--broker-socket|--state|--approval-log|--config|--config-json|--image) _codex_cli_compgen -f \"$cur\"; return ;;",
     "    --thread-params|--turn-params) _codex_cli_at_files \"$cur\"; return ;;",
     "    --codex) _codex_cli_compgen -c \"$cur\"; return ;;",
     "  esac",
     "  if [[ $cur == -* ]]; then",
-    "    _codex_cli_words '--socket --direct --broker --broker-socket --prompt --config-json --thread-params --turn-params --thread --new --state --model --clear-model --start-daemon --cwd --timeout --approval --approval-log --experimental-api --interactive --repl --interrupt-pending --verbosity --progress --debug --agentic-error-code --json --stdin --codex --bash_completion --bash-completion --help -h' \"$cur\"",
+    "    _codex_cli_words '--socket --direct --broker --broker-socket --prompt --image --config --show-config --config-json --thread-params --turn-params --thread --new --state --model --clear-model --start-daemon --cwd --timeout --approval --approval-log --experimental-api --interactive --repl --interrupt-pending --verbosity --progress --debug --agentic-error-code --json --stdin --codex --bash_completion --bash-completion --help -h' \"$cur\"",
     "  fi",
     "}",
     "",
@@ -664,8 +1244,7 @@ function writeCompletionModels(models) {
 }
 
 async function readCachedCompletionModels() {
-  const codexHome = process.env.CODEX_HOME ?? (process.env.HOME ? path.join(process.env.HOME, ".codex") : undefined);
-  if (!codexHome) return [];
+  const codexHome = defaultCodexHome();
   try {
     const cache = JSON.parse(await readFile(path.join(codexHome, "models_cache.json"), "utf8"));
     return [...new Set((cache.models ?? [])
@@ -974,13 +1553,23 @@ function serverRequestResult(options, request) {
 }
 
 const BROKER_VERSION = 1;
-const BROKER_CAPABILITIES = ["agentic-result-v1"];
+const BROKER_CAPABILITIES = ["agentic-result-v1", "image-attachments-v1", "prompt-attachment-actions-v1"];
 const BROKER_MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 const BROKER_START_TIMEOUT_MS = 60000;
+const TRANSIENT_THREAD_METADATA_RETRY_COUNT = 10;
+const TRANSIENT_THREAD_METADATA_RETRY_MS = 100;
 
 function resolveBrokerPaths(options) {
-  const socketPath = path.resolve(options.cwd, options.brokerSocket ?? ".codex-cli/codex-cli-broker.sock");
-  const pidPath = socketPath.endsWith(".sock") ? `${socketPath.slice(0, -5)}.pid` : `${socketPath}.pid`;
+  const defaultSocket = process.platform === "win32"
+    ? `${WINDOWS_NAMED_PIPE_PREFIX}codex-cli-${createHash("sha256").update(options.cwd).digest("hex").slice(0, 16)}`
+    : ".codex-cli/codex-cli-broker.sock";
+  const socketPath = resolveIpcEndpoint(options.cwd, options.brokerSocket ?? defaultSocket);
+  if (process.platform === "win32" && !isWindowsNamedPipe(socketPath)) {
+    throw new Error("--broker-socket must be a Windows named pipe such as \\\\.\\pipe\\codex-cli-broker");
+  }
+  const pidPath = isWindowsNamedPipe(socketPath)
+    ? path.join(options.cwd, ".codex-cli", `broker-${createHash("sha256").update(socketPath).digest("hex").slice(0, 16)}.pid`)
+    : socketPath.endsWith(".sock") ? `${socketPath.slice(0, -5)}.pid` : `${socketPath}.pid`;
   return { socketPath, pidPath };
 }
 
@@ -999,6 +1588,23 @@ function processIsAlive(pid) {
 
 function sendBrokerMessage(socket, message) {
   if (!socket.destroyed) socket.write(`${JSON.stringify({ version: BROKER_VERSION, ...message })}\n`);
+}
+
+function isTransientThreadMetadataError(error) {
+  return /thread-store internal error: failed to read session metadata.*rollout.*is empty/i.test(error?.message ?? "");
+}
+
+async function readThreadWithRetry(client, params, deadline) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.request("thread/read", params);
+    } catch (error) {
+      if (!isTransientThreadMetadataError(error) || attempt >= TRANSIENT_THREAD_METADATA_RETRY_COUNT - 1) throw error;
+      const remaining = deadline === undefined ? TRANSIENT_THREAD_METADATA_RETRY_MS : deadline - Date.now();
+      if (remaining <= 0) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(TRANSIENT_THREAD_METADATA_RETRY_MS, remaining)));
+    }
+  }
 }
 
 class JsonLinePeer {
@@ -1066,6 +1672,7 @@ async function probeBroker(socketPath) {
 
 async function startBroker(options) {
   const { socketPath, pidPath } = resolveBrokerPaths(options);
+  const namedPipe = isWindowsNamedPipe(socketPath);
   const running = await probeBroker(socketPath);
   if (running) {
     if (options.experimentalApi && !running.experimentalApi) throw new Error("broker is already running without --experimental-api; stop it before restarting with experimental API support");
@@ -1075,13 +1682,18 @@ async function startBroker(options) {
   const metadata = await readBrokerMetadata(pidPath);
   if (metadata && processIsAlive(metadata.pid)) throw new Error(`broker metadata points to live pid ${metadata.pid}, but ${socketPath} is unavailable; refusing to remove it`);
   let socketInfo;
-  try { socketInfo = await lstat(socketPath); } catch (error) { if (error.code !== "ENOENT") throw error; }
-  if (socketInfo && !socketInfo.isSocket()) throw new Error(`refusing to remove non-socket broker path: ${socketPath}`);
-  if (socketInfo && !metadata) throw new Error(`stale broker socket has no ownership metadata: ${socketPath}; remove it manually after verifying it is unused`);
-  if (socketInfo) await unlinkIfPresent(socketPath);
+  if (!namedPipe) {
+    try { socketInfo = await lstat(socketPath); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (socketInfo && !socketInfo.isSocket()) throw new Error(`refusing to remove non-socket broker path: ${socketPath}`);
+    if (socketInfo && !metadata) throw new Error(`stale broker socket has no ownership metadata: ${socketPath}; remove it manually after verifying it is unused`);
+    if (socketInfo) await unlinkIfPresent(socketPath);
+  }
   if (metadata) await unlinkIfPresent(pidPath);
-  await mkdir(path.dirname(socketPath), { recursive: true, mode: 0o700 });
-  if (Buffer.byteLength(socketPath) > 100) throw new Error(`broker socket path is too long for a Unix socket: ${socketPath}; use --broker-socket with a shorter path`);
+  await mkdir(path.dirname(pidPath), { recursive: true, mode: 0o700 });
+  if (!namedPipe) {
+    await mkdir(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+    if (Buffer.byteLength(socketPath) > 100) throw new Error(`broker socket path is too long for a Unix socket: ${socketPath}; use --broker-socket with a shorter path`);
+  }
   const args = [path.resolve(process.argv[1]), "--broker-serve", "--cwd", options.cwd, "--broker-socket", socketPath, "--codex", options.codex];
   if (options.experimentalApi) args.push("--experimental-api");
   const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: options.cwd });
@@ -1161,6 +1773,8 @@ function validateBrokerRun(request, workspace) {
   if (request.version !== BROKER_VERSION || request.type !== "run") throw new Error("unsupported broker protocol message");
   if (path.resolve(request.cwd ?? "") !== workspace) throw new Error("broker request cwd does not match the broker workspace");
   if (typeof request.prompt !== "string" || !request.prompt.trim()) throw new Error("broker prompt is required");
+  if (request.promptParts === undefined) request.promptParts = promptActionParts(request.prompt);
+  else validatePromptParts(request.promptParts);
   if (!["decline", "accept", "accept-for-session"].includes(request.approval)) throw new Error("invalid broker approval mode");
   if (!Number.isFinite(request.timeout) || request.timeout <= 0 || request.timeout > 86400) throw new Error("broker timeout must be between 0 and 86400 seconds");
   if (!request.new && typeof request.threadId !== "string") throw new Error("broker request requires a threadId or new=true");
@@ -1169,9 +1783,12 @@ function validateBrokerRun(request, workspace) {
   if (request.debug !== undefined && typeof request.debug !== "boolean") throw new Error("broker debug must be a boolean");
   if (request.agenticErrorCode !== undefined && typeof request.agenticErrorCode !== "boolean") throw new Error("broker agenticErrorCode must be a boolean");
   if (request.verbosity !== undefined && !["low", "medium", "high"].includes(request.verbosity)) throw new Error("broker verbosity must be low, medium, or high");
+  if (request.configWarnings !== undefined && (!Array.isArray(request.configWarnings) || request.configWarnings.some((warning) => typeof warning !== "string"))) throw new Error("broker configWarnings must be an array of strings");
   if (request.threadParamsSpecified !== undefined && typeof request.threadParamsSpecified !== "boolean") throw new Error("broker threadParamsSpecified must be a boolean");
   if (request.threadParams !== undefined && !isJsonObject(request.threadParams)) throw new Error("broker threadParams must be a JSON object");
   if (request.turnParams !== undefined && !isJsonObject(request.turnParams)) throw new Error("broker turnParams must be a JSON object");
+  if (request.images !== undefined && !Array.isArray(request.images)) throw new Error("broker images must be an array");
+  for (const image of request.images ?? []) validateBrokerImageAttachment(image);
   rejectManagedParams("--thread-params", request.threadParams ?? {}, ["cwd"]);
   rejectManagedParams("--turn-params", request.turnParams ?? {}, ["threadId", "cwd", "input", ...(request.agenticErrorCode ? ["outputSchema"] : [])]);
   normalizeSandboxParams(request);
@@ -1334,12 +1951,15 @@ async function serveBroker(options) {
   process.umask(0o077);
   const workspace = path.resolve(options.cwd);
   const { socketPath, pidPath } = resolveBrokerPaths(options);
+  const namedPipe = isWindowsNamedPipe(socketPath);
   const instanceId = randomBytes(16).toString("hex");
   let active;
   let shuttingDown = false;
   let appHealthy = true;
   const knownThreads = new Set();
-  const activeTurnPrompts = new Map();
+  const activeTurnInputs = new Map();
+  const brokerTemporaryAttachments = new Set();
+  await cleanupClipboardTemporaryFiles(workspace);
   const app = new StdioJsonRpcClient(options.codex, (event) => {
     if (!active) return;
     const eventThread = event.params?.threadId ?? event.params?.turn?.threadId;
@@ -1437,7 +2057,7 @@ async function serveBroker(options) {
     await app.request("turn/interrupt", { threadId, turnId });
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const history = await app.request("thread/read", { threadId, includeTurns: true });
+      const history = await readThreadWithRetry(app, { threadId, includeTurns: true }, deadline);
       const turn = history.thread.turns.find((candidate) => candidate.id === turnId);
       if (!turn || turn.status !== "inProgress") return;
       if (Date.now() >= deadline) {
@@ -1462,10 +2082,18 @@ async function serveBroker(options) {
 
   const executeRun = async (run) => {
     const request = run.request;
+    let resolvedInput;
     try {
+      request.images = await prepareImageAttachments((request.images ?? []).map((image) => ({ value: image.path })), workspace);
+      if (request.debug && !request.json) for (const image of request.images) run.peer.send({ type: "debug", message: `attached image ${imageDescription(image)}` });
+      resolvedInput = await resolvePromptInput(request.promptParts ?? [textInput(request.prompt)], request.images, workspace);
       let threadId = request.threadId;
       let createdThread = Boolean(request.new);
       const startThread = async () => {
+        if (!run.configurationWarningsEmitted) {
+          run.configurationWarningsEmitted = true;
+          for (const warning of request.configWarnings ?? []) run.peer.send({ type: "config-warning", warning });
+        }
         const threadStartParams = { cwd: workspace, ephemeral: false, ...(request.threadParams ?? {}) };
         if (Object.hasOwn(request, "model")) threadStartParams.model = request.model;
         const response = await app.request("thread/start", threadStartParams);
@@ -1486,7 +2114,7 @@ async function serveBroker(options) {
         await startThread();
       } else {
         try {
-          const response = await app.request("thread/read", { threadId, includeTurns: true });
+          const response = await readThreadWithRetry(app, { threadId, includeTurns: true });
           if (threadIsNotLoaded(response)) {
             if (!request.autoNewOnStale) await resumeThread();
             else {
@@ -1508,7 +2136,7 @@ async function serveBroker(options) {
       run.threadId = threadId;
       const before = createdThread ? undefined : await (async () => {
         try {
-          const response = await app.request("thread/read", { threadId, includeTurns: true });
+          const response = await readThreadWithRetry(app, { threadId, includeTurns: true });
           return threadIsNotLoaded(response) && !request.autoNewOnStale ? resumeThread() : response;
         }
         catch {
@@ -1517,11 +2145,15 @@ async function serveBroker(options) {
         }
       })();
       const pending = before?.thread.turns.filter((turn) => turn.status === "inProgress") ?? [];
-      const matchingTurn = pending.find((turn) => activeTurnPrompts.get(turn.id) === request.prompt || turnPromptText(turn) === request.prompt) ?? (request.resumeActiveTurn && pending.length === 1 ? pending[0] : undefined);
+      const requestInput = { prompt: request.prompt, images: request.images, actionDigests: resolvedInput.actionDigests };
+      const matchingTurn = pending.find((turn) => {
+        const activeInput = activeTurnInputs.get(turn.id);
+        return activeInput ? sameTurnInput(activeInput, requestInput) : request.images.length === 0 && resolvedInput.actionDigests.length === 0 && turnPromptText(turn) === request.prompt;
+      });
       if (pending.length && !matchingTurn && !request.interruptPending) throw new Error(`thread has active turn ${pending.map((turn) => turn.id).join(", ")}; use --interrupt-pending`);
       if (!matchingTurn) for (const turn of pending) {
         await interruptTurnAndWait(threadId, turn.id);
-        activeTurnPrompts.delete(turn.id);
+        activeTurnInputs.delete(turn.id);
       }
       let started;
       if (!matchingTurn) {
@@ -1530,7 +2162,7 @@ async function serveBroker(options) {
           ...(request.agenticErrorCode ? { outputSchema: AGENTIC_RESULT_SCHEMA } : {}),
           threadId,
           cwd: workspace,
-          input: [{ type: "text", text: request.prompt, text_elements: [] }],
+          input: resolvedInput.input,
         };
         if (Object.hasOwn(request, "model")) turnStartParams.model = request.model;
         try { started = await app.request("turn/start", turnStartParams); }
@@ -1543,16 +2175,22 @@ async function serveBroker(options) {
           } else if (!createdThread && /thread not found/i.test(error.message)) throw staleBrokerThreadError(threadId);
           else throw error;
         }
+        for (const filePath of resolvedInput.temporaryPaths) brokerTemporaryAttachments.add(filePath);
+        resolvedInput.temporaryPaths = [];
+      }
+      if (matchingTurn) {
+        await cleanupTemporaryAttachments(resolvedInput.temporaryPaths);
+        resolvedInput.temporaryPaths = [];
       }
       run.turnId = matchingTurn?.id ?? started.turn.id;
-      if (!matchingTurn) activeTurnPrompts.set(run.turnId, request.prompt);
+      if (!matchingTurn) activeTurnInputs.set(run.turnId, requestInput);
       run.peer.send({ type: "thread", threadId, instanceId, created: createdThread });
       const deadline = Date.now() + request.timeout * 1000;
       let interruptedReads = 0;
       let lastObservedStatus;
       for (;;) {
         if (run.disconnected) throw Object.assign(new Error("broker client disconnected"), { exitCode: 130, keepTurn: true });
-        const history = await app.request("thread/read", { threadId, includeTurns: true });
+        const history = await readThreadWithRetry(app, { threadId, includeTurns: true }, deadline);
         const turn = history.thread.turns.find((candidate) => candidate.id === run.turnId);
         const observedStatus = turn?.status ?? "not found";
         if (request.debug && !request.json && observedStatus !== lastObservedStatus) {
@@ -1560,11 +2198,11 @@ async function serveBroker(options) {
           lastObservedStatus = observedStatus;
         }
         if (history.thread.status?.type === "systemError") {
-          activeTurnPrompts.delete(run.turnId);
+          activeTurnInputs.delete(run.turnId);
           throw systemError(turn?.error ?? run.lastTurnError);
         }
         if (run.terminalTurnError) {
-          activeTurnPrompts.delete(run.turnId);
+          activeTurnInputs.delete(run.turnId);
           const error = terminalCodexError(run.terminalTurnError);
           error.cancelTurn = run.terminalTurnRequiresInterrupt;
           throw error;
@@ -1581,7 +2219,7 @@ async function serveBroker(options) {
               run.peer.send({ type: "item", phase: "completed", item });
             }
           }
-          activeTurnPrompts.delete(run.turnId);
+          activeTurnInputs.delete(run.turnId);
           run.peer.send({
             type: "completed",
             threadId,
@@ -1591,7 +2229,7 @@ async function serveBroker(options) {
           return;
         }
         if (turn?.status === "failed") {
-          activeTurnPrompts.delete(run.turnId);
+          activeTurnInputs.delete(run.turnId);
           throw Object.assign(new Error(turnErrorDetails(turn.error) ?? "Codex turn failed"), { keepTurn: true });
         }
         if (turn?.status === "interrupted") {
@@ -1599,7 +2237,7 @@ async function serveBroker(options) {
           // three matching reads before treating an interruption as final.
           interruptedReads += 1;
           if (interruptedReads >= 3) {
-            activeTurnPrompts.delete(run.turnId);
+            activeTurnInputs.delete(run.turnId);
             throw interruptedTurnError(turn, run.lastTurnError);
           }
         } else {
@@ -1612,6 +2250,7 @@ async function serveBroker(options) {
       if (!error.keepTurn || error.cancelTurn) await interruptActive();
       if (!run.disconnected) run.peer.send({ type: "error", code: error.code ?? "TURN_FAILED", exitCode: error.exitCode ?? 2, message: error.message });
     } finally {
+      if (resolvedInput) await cleanupTemporaryAttachments(resolvedInput.temporaryPaths);
       run.pendingApproval?.resolve("decline");
       run.pendingUserInput?.resolve({ answers: {} });
       if (active === run) active = undefined;
@@ -1626,8 +2265,13 @@ async function serveBroker(options) {
     await interruptActive("broker is stopping");
     await new Promise((resolve) => server.close(resolve));
     app.close();
+    await cleanupTemporaryAttachments([...brokerTemporaryAttachments]);
+    brokerTemporaryAttachments.clear();
     const metadata = await readBrokerMetadata(pidPath).catch(() => undefined);
-    if (metadata?.instanceId === instanceId) { await unlinkIfPresent(socketPath); await unlinkIfPresent(pidPath); }
+    if (metadata?.instanceId === instanceId) {
+      if (!namedPipe) await unlinkIfPresent(socketPath);
+      await unlinkIfPresent(pidPath);
+    }
   };
   app.child.once("exit", () => {
     appHealthy = false;
@@ -1671,9 +2315,10 @@ async function serveBroker(options) {
     });
   });
   server.on("error", (error) => { stderr.write(`codex-cli broker: ${error.message}\n`); process.exitCode = 2; });
-  await mkdir(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+  await mkdir(path.dirname(pidPath), { recursive: true, mode: 0o700 });
+  if (!namedPipe) await mkdir(path.dirname(socketPath), { recursive: true, mode: 0o700 });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
-  await chmod(socketPath, 0o600);
+  if (!namedPipe) await chmod(socketPath, 0o600);
   const metadata = { version: BROKER_VERSION, pid: process.pid, instanceId, socketPath, cwd: workspace, experimentalApi: options.experimentalApi, startedAt: new Date().toISOString() };
   await writeFile(pidPath, `${JSON.stringify(metadata, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   const signal = () => cleanup().then(() => process.exit(0));
@@ -1681,13 +2326,19 @@ async function serveBroker(options) {
   process.once("SIGINT", signal);
 }
 
-async function runBrokerClient(options, prompt, savedState) {
+async function runBrokerClient(options, prompt, promptParts, savedState) {
   const { socketPath } = resolveBrokerPaths(options);
   const status = await probeBroker(socketPath);
   if (!status) throw new Error(`broker is not running; start it with: node ${process.argv[1]} --broker start`);
   if (options.experimentalApi && !status.experimentalApi) throw new Error("broker was not started with --experimental-api; stop it and restart with: --broker start --experimental-api");
   if (options.agenticErrorCode && !status.capabilities?.includes("agentic-result-v1")) {
     throw new Error("running broker does not support --agentic-error-code; restart it with: codex-cli --broker stop && codex-cli --broker start");
+  }
+  if (options.images.length && !status.capabilities?.includes("image-attachments-v1")) {
+    throw new Error("running broker does not support --image; restart it with: codex-cli --broker stop && codex-cli --broker start");
+  }
+  if (promptParts.some((part) => part.type === "action") && !status.capabilities?.includes("prompt-attachment-actions-v1")) {
+    throw new Error("running broker does not support prompt attachment actions; restart it with: codex-cli --broker stop && codex-cli --broker start");
   }
   if (!options.new && !options.threadExplicit && (
     savedState.transport !== "broker" ||
@@ -1720,10 +2371,13 @@ async function runBrokerClient(options, prompt, savedState) {
         debug: options.debug,
         agenticErrorCode: options.agenticErrorCode,
         verbosity: options.verbosity,
-        threadParamsSpecified: options.threadParamSources.length > 0 || Boolean(options.configJson),
+        configWarnings: options.configWarnings,
+        threadParamsSpecified: options.threadParamsSpecified,
         threadId: options.thread,
         cwd: path.resolve(options.cwd),
         prompt,
+        promptParts,
+        images: options.images,
         model: options.clearModel ? null : options.model,
         threadParams: options.threadParams,
         turnParams: options.turnParams,
@@ -1750,6 +2404,7 @@ async function runBrokerClient(options, prompt, savedState) {
       } else if (message.type === "delta") renderer.agentDelta(message.itemId, message.delta);
       else if (message.type === "item") renderer.item(message.item, message.phase);
       else if (message.type === "debug") { progress.stop(); stderr.write(`codex-cli: debug: ${message.message}\n`); }
+      else if (message.type === "config-warning") { progress.stop(); stderr.write(`codex-cli: warning: ${message.warning}\n`); progress.start(); }
       else if (message.type === "event") stdout.write(`${JSON.stringify(message.event)}\n`);
       else if (message.type === "approval-handled") {
         progress.stop();
@@ -1798,45 +2453,57 @@ async function runBrokerClient(options, prompt, savedState) {
 }
 
 async function main() {
-  agenticErrorCodeActive = agenticModeRequested(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const invocationCwd = process.cwd();
+  agenticErrorCodeActive = agenticModeRequested(argv);
   let options;
-  try { options = parseArgs(process.argv.slice(2)); } catch (error) { fail(error.message); return; }
-  try { applyEnvironmentOverrides(options); } catch (error) { fail(error.message); return; }
+  try {
+    const configPaths = configurationBootstrap(argv, invocationCwd);
+    options = createDefaultOptions(invocationCwd);
+    await loadLayeredConfiguration(options, invocationCwd, configPaths);
+    applyEnvironmentOverrides(options);
+    parseArgs(argv, options);
+  } catch (error) { fail(error.message); return; }
   agenticErrorCodeActive = options.agenticErrorCode;
+  try { validateImageInvocation(options); } catch (error) { fail(error.message); return; }
   if (options.help) { stdout.write(usage); return; }
   options.cwd = path.resolve(options.cwd);
+  options.state = path.resolve(options.cwd, options.state);
+  if (options.approvalLog) options.approvalLog = path.resolve(options.cwd, options.approvalLog);
+  if (options.socket) options.socket = resolveIpcEndpoint(options.cwd, options.socket);
+  if (options.brokerSocket) options.brokerSocket = resolveIpcEndpoint(options.cwd, options.brokerSocket);
+  try {
+    await materializeRawParameters(options);
+    rejectManagedParams("--thread-params", options.threadParams, ["cwd"]);
+    rejectManagedParams("--turn-params", options.turnParams, ["threadId", "cwd", "input", ...(options.agenticErrorCode ? ["outputSchema"] : [])]);
+  } catch (error) { fail(error.message); return; }
+  if (options.showConfig) { stdout.write(`${JSON.stringify(resolvedConfiguration(options), null, 2)}\n`); return; }
+  emitConfigurationDebug(options);
   await validateWorkspace(options.cwd);
   if (options.bashCompletion) { stdout.write(bashCompletionScript(options)); return; }
   if (options.completionModels || options.completionCachedModels) { await printCompletionModels(options); return; }
-  options.state = path.resolve(options.cwd, options.state);
-  if (options.approvalLog) options.approvalLog = path.resolve(options.cwd, options.approvalLog);
-  if (options.brokerSocket) options.brokerSocket = path.resolve(options.cwd, options.brokerSocket);
   if (options.brokerServe) { await serveBroker(options); return; }
   if (options.brokerAction === "start") { await startBroker(options); return; }
   if (options.brokerAction === "status") { await statusBroker(options); return; }
   if (options.brokerAction === "stop") { await stopBroker(options); return; }
   if (options.brokerAction === "threads") { await listBrokerThreads(options); return; }
   if (options.broker && (options.direct || options.socket || options.repl || options.startDaemon)) { fail("--broker cannot be combined with --direct, --socket, --repl, or --start-daemon"); return; }
-  options.threadParams = await loadJsonObjectOptions("--thread-params", options.threadParamSources, options.cwd);
-  options.turnParams = await loadJsonObjectOptions("--turn-params", options.turnParamSources, options.cwd);
-  if (options.configJson) {
-    const configPath = path.resolve(options.cwd, options.configJson);
-    const configOverrides = await loadJsonObjectOptions("--config-json", [`@${configPath}`], options.cwd);
-    if (options.threadParams.config !== undefined && !isJsonObject(options.threadParams.config)) throw new Error("--thread-params config must be a JSON object when used with --config-json");
-    options.threadParams.config = { ...configOverrides, ...(options.threadParams.config ?? {}) };
-  }
-  rejectManagedParams("--thread-params", options.threadParams, ["cwd"]);
-  rejectManagedParams("--turn-params", options.turnParams, ["threadId", "cwd", "input", ...(options.agenticErrorCode ? ["outputSchema"] : [])]);
   const savedState = await readSavedState(options.state);
-  if (!options.thread && !options.new) options.thread = savedState.threadId;
+  if (!options.thread && !options.new) {
+    options.thread = savedState.threadId;
+    if (options.thread) options.optionSources.thread = { kind: "state", path: options.state };
+  }
   if (options.broker && !options.threadExplicit && !options.new && (!options.thread || savedState.transport !== "broker")) {
     options.new = true;
     options.thread = undefined;
   }
   try { normalizeSandboxParams(options); } catch (error) { fail(error.message); return; }
-  if ((options.threadParamSources.length || options.configJson) && !options.new && !options.broker) { fail("--config-json and --thread-params apply only when creating a thread with --new"); return; }
+  if (options.threadParamsSpecified && !options.new && !options.broker) { fail("--config-json and --thread-params apply only when creating a thread with --new"); return; }
   const rawModelSpecified = Object.hasOwn(options.threadParams, "model") || Object.hasOwn(options.turnParams, "model");
-  if (!options.model && !options.clearModel && !rawModelSpecified) options.model = savedState.model;
+  if (!options.model && !options.clearModel && !rawModelSpecified) {
+    options.model = savedState.model;
+    if (options.model) options.optionSources.model = { kind: "state", path: options.state };
+  }
   if (options.direct && !options.new) { fail("--direct creates a per-process thread; use --new for each direct invocation"); return; }
   if (!options.thread && !options.new) { fail(`no saved thread found at ${options.state}; use --new or --thread\n\n${usage}`); return; }
   if (options.thread && options.new) { fail("--thread and --new cannot be used together"); return; }
@@ -1847,14 +2514,39 @@ async function main() {
   if (options.repl && !stdin.isTTY) { fail("--repl requires a terminal standard input"); return; }
   if (options.model && options.clearModel) { fail("--model and --clear-model cannot be used together"); return; }
   if (options.clearModel && rawModelSpecified) { fail("--clear-model cannot be combined with model in --thread-params or --turn-params"); return; }
+  if (process.platform === "win32" && !options.direct && !options.socket) {
+    fail("managed app-server socket mode is unavailable on Windows; use --broker, --direct, or --socket \\\\.\\pipe\\NAME");
+    return;
+  }
+  options.configWarnings = configurationWarnings(options);
 
   const userPrompt = (await promptFor(options)).trim();
   if (!userPrompt) { fail("a prompt is required"); return; }
   const prompt = options.agenticErrorCode ? promptWithAgenticResultContract(userPrompt) : userPrompt;
+  let promptParts;
+  try { promptParts = promptPartsFor(userPrompt, options.agenticErrorCode); }
+  catch (error) { fail(error.message); return; }
+  try {
+    options.images = await prepareImageAttachments(options.images, options.invocationCwd);
+    for (const image of options.images) debug(options, `attached image ${imageDescription(image)}`);
+  } catch (error) { fail(error.message); return; }
 
-  if (options.broker) { await runBrokerClient(options, prompt, savedState); return; }
+  if (options.broker) { await runBrokerClient(options, prompt, promptParts, savedState); return; }
 
-  if (options.startDaemon && !options.socket && !options.direct) await run(options.codex, ["app-server", "daemon", "start"]);
+  let currentPrompt = prompt;
+  let currentPromptParts = promptParts;
+  let currentInput;
+  try { currentInput = await resolvePromptInput(currentPromptParts, options.images, options.cwd); }
+  catch (error) { fail(error.message); return; }
+  const temporaryAttachments = new Set(currentInput.temporaryPaths);
+
+  if (options.startDaemon && !options.socket && !options.direct) {
+    try { await run(options.codex, ["app-server", "daemon", "start"]); }
+    catch (error) {
+      await cleanupTemporaryAttachments([...temporaryAttachments]);
+      throw error;
+    }
+  }
 
   let targetThreadId;
   let targetTurnId;
@@ -1863,7 +2555,7 @@ async function main() {
   let terminalTurnRequiresInterrupt = false;
   const progress = new ProgressSpinner(options.progress && stderr.isTTY && !options.json);
   const renderer = createHumanRenderer(options, progress);
-  const socketPath = options.socket ?? `${process.env.CODEX_HOME ?? `${process.env.HOME}/.codex`}/app-server-control/app-server-control.sock`;
+  const socketPath = options.socket ?? path.join(defaultCodexHome(), "app-server-control", "app-server-control.sock");
   const onEvent = (event) => {
     debug(options, `received event ${event.method}`);
     const eventError = event.params?.turn?.error ?? event.params?.error;
@@ -1914,6 +2606,7 @@ async function main() {
     }
     let threadId = options.thread;
     if (options.new) {
+      emitConfigurationWarnings(options.configWarnings);
       const threadStartParams = { cwd: options.cwd, ephemeral: false, ...options.threadParams };
       if (hasModelOverride(options)) threadStartParams.model = options.clearModel ? null : options.model;
       const response = await client.request("thread/start", threadStartParams);
@@ -1931,7 +2624,7 @@ async function main() {
           return client.request("thread/resume", resumeParams);
         };
         try {
-          const response = await client.request("thread/read", { threadId, includeTurns: true });
+          const response = await readThreadWithRetry(client, { threadId, includeTurns: true });
           return threadIsNotLoaded(response) ? resumeThread() : response;
         }
         catch {
@@ -1952,7 +2645,6 @@ async function main() {
         }
       }
     }
-    let currentPrompt = prompt;
     for (;;) {
       const turnStartParams = {
         ...options.turnParams,
@@ -1960,7 +2652,7 @@ async function main() {
         threadId,
         cwd: options.cwd,
         ...(!options.direct && options.approval !== "decline" ? { approvalPolicy: "never" } : {}),
-        input: [{ type: "text", text: currentPrompt, text_elements: [] }],
+        input: currentInput.input,
       };
       if (hasModelOverride(options)) turnStartParams.model = options.clearModel ? null : options.model;
       lastTurnError = undefined;
@@ -1972,8 +2664,9 @@ async function main() {
       progress.start();
       const deadline = Date.now() + options.timeout * 1000;
       let lastTurnStatus;
+      let interruptedReads = 0;
       for (;;) {
-        const history = await client.request("thread/read", { threadId, includeTurns: true });
+        const history = await readThreadWithRetry(client, { threadId, includeTurns: true }, deadline);
         const turn = history.thread.turns.find((candidate) => candidate.id === targetTurnId);
         const threadStatus = history.thread.status?.type ?? history.thread.status;
         const activeFlags = history.thread.status?.activeFlags?.join(",");
@@ -1999,7 +2692,12 @@ async function main() {
         if (turn?.status === "failed") {
           throw new Error(turnErrorDetails(turn.error) ?? "Codex turn failed");
         }
-        if (turn?.status === "interrupted") throw interruptedTurnError(turn);
+        if (turn?.status === "interrupted") {
+          interruptedReads += 1;
+          if (interruptedReads >= 3) throw interruptedTurnError(turn);
+        } else {
+          interruptedReads = 0;
+        }
         if (Date.now() >= deadline) {
           const seconds = Number.isInteger(options.timeout) ? options.timeout : options.timeout.toString();
           const error = new Error(`timed out after ${seconds} seconds waiting for turn ${targetTurnId} to complete (last status: ${lastTurnStatus ?? "not found"}; it may be awaiting approval or a command may be blocked)`);
@@ -2014,6 +2712,9 @@ async function main() {
       const terminal = createInterface({ input: stdin, output: stderr });
       try { currentPrompt = (await terminal.question("codex-cli> ")).trim(); } finally { terminal.close(); }
       if (!currentPrompt || currentPrompt === "/exit") break;
+      currentPromptParts = promptPartsFor(currentPrompt, false);
+      currentInput = await resolvePromptInput(currentPromptParts, options.images, options.cwd);
+      for (const filePath of currentInput.temporaryPaths) temporaryAttachments.add(filePath);
     }
   } catch (error) {
     if (!options.socket && !options.direct && /ENOENT|no such file/i.test(error.message)) {
@@ -2021,6 +2722,7 @@ async function main() {
     }
     throw error;
   } finally {
+    await cleanupTemporaryAttachments([...temporaryAttachments]);
     progress.stop();
     client.close();
   }

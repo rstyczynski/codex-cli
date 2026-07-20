@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,7 @@ import test from "node:test";
 
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 const cli = path.join(root, "bin/codex-cli");
+const fakeClipboard = path.join(root, "tests/fixtures/fake-cpb-paste.mjs");
 
 function encodeServerFrame(message) {
   const payload = Buffer.from(JSON.stringify(message));
@@ -43,6 +44,7 @@ function upgradeResponse(handshake) {
 function invokeCli(workspace, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, "--cwd", workspace, ...args], {
+      cwd: workspace,
       stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       env: { ...process.env, ...options.env },
     });
@@ -259,6 +261,51 @@ test("socket mode creates, saves, and resumes a managed app-server thread", asyn
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /item completed only reply/);
   assert.equal(server.requests.filter((request) => request.method === "thread/start").length, 1);
+});
+
+test("socket mode attaches verified local images to the same user turn", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli socket image "));
+  const server = new FakeSocketAppServer();
+  const socketPath = path.join(workspace, "app.sock");
+  const imagePath = path.join(workspace, "capture.png");
+  await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]));
+  const canonicalImagePath = await realpath(imagePath);
+  await server.listen(socketPath);
+  t.after(() => server.close());
+
+  const result = await invokeCli(workspace, ["--socket", socketPath, "--new", "--image", "capture.png", "inspect socket image"]);
+  assert.equal(result.status, 0, result.stderr);
+  const turn = server.requests.find((request) => request.method === "turn/start");
+  assert.deepEqual(turn.params.input, [
+    { type: "text", text: "inspect socket image", text_elements: [] },
+    { type: "localImage", path: canonicalImagePath, detail: "auto" },
+  ]);
+});
+
+test("socket mode resolves clipboard prompt actions into ordered input items", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli socket clipboard action "));
+  const server = new FakeSocketAppServer();
+  const socketPath = path.join(workspace, "app.sock");
+  const clipboardTrace = path.join(workspace, "clipboard-trace.log");
+  await server.listen(socketPath);
+  t.after(() => server.close());
+
+  const result = await invokeCli(workspace, ["--socket", socketPath, "--new", "before <clipboard> after"], {
+    env: {
+      NODE_ENV: "test",
+      CDXCLI_TEST_CLIPBOARD_HELPER: fakeClipboard,
+      FAKE_CLIPBOARD_TRACE: clipboardTrace,
+      FAKE_CLIPBOARD_TEXT: "socket clipboard text",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const turn = server.requests.find((request) => request.method === "turn/start");
+  assert.deepEqual(turn.params.input, [
+    { type: "text", text: "before ", text_elements: [] },
+    { type: "text", text: "socket clipboard text", text_elements: [] },
+    { type: "text", text: " after", text_elements: [] },
+  ]);
+  assert.deepEqual((await readFile(clipboardTrace, "utf8")).trim().split("\n"), ["--mime", "--text"]);
 });
 
 test("socket mode surfaces thread system errors even when the turn says completed", async (t) => {
