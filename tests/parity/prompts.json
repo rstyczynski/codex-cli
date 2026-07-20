@@ -1,0 +1,19 @@
+[
+  {
+    "id": "arithmetic",
+    "prompt": "Reply with the numeral only: what is 2 + 2? Do not use tools.",
+    "requiredPatterns": ["\\b4\\b"]
+  },
+  {
+    "id": "workspace-status",
+    "prompt": "Read only the current workspace. Read status.txt and reply with its exact single token. Do not modify any files.",
+    "requiredPatterns": ["PARITY_GREEN"]
+  },
+  {
+    "id": "focused-review",
+    "prompt": "Read only the current workspace. Inspect buggy-add.js and write a detailed review as 10 to 20 numbered complete sentences, one sentence per line. Explain the specific defect in the add function, its runtime impact, the correct implementation, and a focused validation approach. Do not modify any files.",
+    "requiredPatterns": ["\\badd\\b", "subtract|minus"],
+    "minimumNumberedSentences": 10,
+    "maximumNumberedSentences": 20
+  }
+]

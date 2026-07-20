@@ -3,6 +3,7 @@
 .codex-cli/
 node_modules/
 run_outputs/
+tests/results/
 work/
 coverage/
 .DS_Store
