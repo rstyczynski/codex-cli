@@ -240,7 +240,11 @@ input.on("line", (line) => {
     if (prompt.includes("unknown request")) {
       const requestId = `unknown-${turn.id}`;
       approvals.set(requestId, { thread, turn, prompt });
-      setTimeout(() => send({ id: requestId, method: "item/unknown/requestApproval", params: { threadId: thread.id, turnId: turn.id, command: "unknown" } }), 5);
+      setTimeout(() => send({ id: requestId, method: "item/unknown/requestPermission", params: { threadId: thread.id, turnId: turn.id, command: "unknown" } }), 5);
+    } else if (prompt.includes("file approval")) {
+      const approvalId = `file-approval-${turn.id}`;
+      approvals.set(approvalId, { thread, turn, prompt });
+      setTimeout(() => send({ id: approvalId, method: "item/fileChange/requestApproval", params: { threadId: thread.id, turnId: turn.id, command: "update README.md", reason: "fake file-change test" } }), 5);
     } else if (prompt.includes("approve")) {
       const approvalId = `approval-${turn.id}`;
       approvals.set(approvalId, { thread, turn, prompt });

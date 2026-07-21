@@ -1593,6 +1593,10 @@ async function approvalResult(options, request) {
   return result;
 }
 
+function isApprovalRequest(request) {
+  return typeof request.method === "string" && request.method.endsWith("/requestApproval");
+}
+
 async function userInputResult(options, request) {
   if (!options.interactive) throw new Error("Codex requested user input; rerun with --interactive to answer it in the terminal");
   if (!stdin.isTTY) throw new Error("cannot answer Codex user input because standard input is not a terminal");
@@ -1614,7 +1618,7 @@ async function userInputResult(options, request) {
 }
 
 function serverRequestResult(options, request) {
-  if (request.method === "item/commandExecution/requestApproval") return approvalResult(options, request);
+  if (isApprovalRequest(request)) return approvalResult(options, request);
   if (request.method === "item/tool/requestUserInput") return userInputResult(options, request);
   debug(options, `declining unsupported app-server request: ${request.method}`);
   if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify(request)}\n`);
@@ -2091,7 +2095,7 @@ async function serveBroker(options) {
       });
     }
     if (!active || request.params?.threadId !== active.threadId || request.params?.turnId !== active.turnId) return { decision: "decline" };
-    if (request.method !== "item/commandExecution/requestApproval") {
+    if (!isApprovalRequest(request)) {
       if (active.request.json) active.peer.send({ type: "event", event: { method: "warning", params: { message: `unsupported app-server request ${request.method}; declined` } } });
       else active.peer.send({ type: "approval-handled", command: request.params?.command ?? request.method, reason: `unsupported app-server request ${request.method}`, decision: "decline" });
       return { decision: "decline" };

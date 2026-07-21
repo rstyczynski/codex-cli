@@ -169,6 +169,11 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /\[accept\]/);
 
+  result = invoke(workspace, "--broker", "--approval", "accept", "--approval-log", "approvals.toml", "--prompt", "file approval broker");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /file approval broker \[accept\]/);
+  assert.match(result.stderr, /approval requested for update README\.md; accept/);
+
   result = invoke(workspace, "--broker", "--approval", "decline", "--approval-log", "approvals.toml", "--prompt", "approve fourth");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /\[decline\]/);

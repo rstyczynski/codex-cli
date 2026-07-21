@@ -136,10 +136,12 @@ Broker-created threads belong to the broker's running app-server. After a broker
 ### Approvals and user input
 
 Approval requests default to `decline` so automation does not accidentally
-authorize a command. Choose a policy explicitly; the example demonstrates an
-approval audit log and, when a terminal is attached, structured user input. It
-uses `hiai` without an explicit `--broker`, validating the broker-first launcher,
-and `sudo -n` so the command cannot block waiting for a password.
+authorize a command or file change. Every app-server request whose method ends
+in `/requestApproval` uses the chosen policy; unsupported non-approval requests
+remain denied. The example demonstrates an approval audit log and, when a
+terminal is attached, structured user input. It uses `hiai` without an explicit
+`--broker`, validating the broker-first launcher, and `sudo -n` so the command
+cannot block waiting for a password.
 
 ```bash
 ./examples/approvals-and-user-input.sh

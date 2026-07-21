@@ -263,6 +263,11 @@ test("direct mode covers approvals, JSON requests, failures, and timeouts", asyn
   assert.match(result.stdout, /acceptForSession/);
   assert.match(await readFile(approvalLog, "utf8"), /decision = "acceptForSession"/);
 
+  result = invoke(workspace, ["--direct", "--new", "--approval", "accept", "--approval-log", approvalLog, "file approval direct"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /file approval direct \[accept\]/);
+  assert.match(await readFile(approvalLog, "utf8"), /method = "item\/fileChange\/requestApproval"/);
+
   result = invoke(workspace, ["--direct", "--new", "--approval", "accept", "--approval-log", workspace, "approve log failure"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /could not write approval log/);
@@ -274,7 +279,7 @@ test("direct mode covers approvals, JSON requests, failures, and timeouts", asyn
   result = invoke(workspace, ["--direct", "--new", "--json", "unknown request"]);
   assert.equal(result.status, 0, result.stderr);
   const events = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
-  assert.ok(events.some((event) => event.method === "item/unknown/requestApproval"));
+  assert.ok(events.some((event) => event.method === "item/unknown/requestPermission"));
 
   result = invoke(workspace, ["--direct", "--new", "interrupted reason"]);
   assert.equal(result.status, 130, result.stderr);

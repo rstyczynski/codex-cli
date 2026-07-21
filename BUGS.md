@@ -4,6 +4,7 @@
 
 ## Resolved
 
+- Fixed in `v1.0.5`: `codex-cli` previously declined `item/fileChange/requestApproval` because it accepted only command-execution approval requests. Every app-server approval request now honors the configured policy, while unrelated request methods remain denied.
 - Fixed in `v1.0.3`: `--interactive` silently declined approval and user-input
   requests when standard input was not a terminal. It now fails before starting
   a turn and explains that it needs a terminal.
