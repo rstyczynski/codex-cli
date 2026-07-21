@@ -46,7 +46,7 @@ Options:
   --approval-log PATH  Append approval requests and decisions to a TOML audit log
   --experimental-api   Enable experimental app-server fields and methods
   --bash_completion    Print Bash completion code for sourcing
-  --interactive         Answer Codex user-input requests from the terminal
+  --interactive         Answer Codex approval and user-input requests from a terminal
   --repl                Keep a direct thread open for additional terminal turns
   --interrupt-pending   Interrupt active turns in the selected thread before starting
   --verbosity LEVEL     Human output: low (default), medium, or high
@@ -1572,7 +1572,7 @@ async function logApproval(options, request, decision) {
 async function approvalResult(options, request) {
   debug(options, `received ${request.method} for turn ${request.params.turnId ?? "unknown"}`);
   let result;
-  if (options.direct && options.interactive) {
+  if (options.interactive) {
     if (!stdin.isTTY) throw new Error("cannot answer an approval request because standard input is not a terminal");
     const prompt = createInterface({ input: stdin, output: stderr });
     try {
@@ -2589,6 +2589,7 @@ async function main() {
   if (options.repl && !options.direct) { fail("--repl requires --direct"); return; }
   if (options.repl && options.agenticErrorCode) { fail("--agentic-error-code cannot be combined with --repl"); return; }
   if (options.repl && !stdin.isTTY) { fail("--repl requires a terminal standard input"); return; }
+  if (options.interactive && !stdin.isTTY) { fail("--interactive requires a terminal on standard input; rerun it directly from a terminal"); return; }
   if (options.model && options.clearModel) { fail("--model and --clear-model cannot be used together"); return; }
   if (options.clearModel && rawModelSpecified) { fail("--clear-model cannot be combined with model in --thread-params or --turn-params"); return; }
   if (process.platform === "win32" && !options.direct && !options.socket) {

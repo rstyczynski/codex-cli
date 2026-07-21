@@ -227,7 +227,8 @@ For example, `--broker-socket` maps to `CDXCLI_BROKER_SOCKET`, `--thread-params`
 
 Use `--approval-log` to record each approval request and decision. Use
 `--interactive` to answer Codex approval prompts and structured questions from
-the terminal.
+the terminal. It requires standard input to be a terminal; `codex-cli` fails
+before starting a turn when it is run from a non-interactive runner.
 
 `--interactive` answers Codex protocol requests; it does not attach terminal
 input to child processes. In particular, use non-interactive forms such as

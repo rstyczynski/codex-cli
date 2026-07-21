@@ -172,6 +172,12 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   result = invoke(workspace, "--broker", "--approval", "decline", "--approval-log", "approvals.toml", "--prompt", "approve fourth");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /\[decline\]/);
+
+  result = invoke(workspace, "--broker", "--new", "--interactive", "approve from a non-terminal");
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /--interactive requires a terminal on standard input/);
+  assert.doesNotMatch(result.stderr, /approval requested/);
+
   result = invoke(workspace, "--broker", "--approval", "accept", "--prompt", "unknown request");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /\[decline\]/);

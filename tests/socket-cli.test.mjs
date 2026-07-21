@@ -263,6 +263,19 @@ test("socket mode creates, saves, and resumes a managed app-server thread", asyn
   assert.equal(server.requests.filter((request) => request.method === "thread/start").length, 1);
 });
 
+test("socket mode rejects --interactive without a terminal before starting a turn", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli socket interactive approval "));
+  const server = new FakeSocketAppServer();
+  const socketPath = path.join(workspace, "app.sock");
+  await server.listen(socketPath);
+  t.after(() => server.close());
+
+  const result = await invokeCli(workspace, ["--socket", socketPath, "--new", "--interactive", "approve interactive socket"]);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /--interactive requires a terminal on standard input/);
+  assert.ok(!server.requests.some((request) => request.method === "thread\/start"));
+});
+
 test("socket mode attaches verified local images to the same user turn", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli socket image "));
   const server = new FakeSocketAppServer();
