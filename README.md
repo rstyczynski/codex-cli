@@ -4,9 +4,9 @@
 
 ## Table of contents
 
-- [Quick introduction](#quick-introduction)
-  - [Examples](#examples)
-- [Requirements](#requirements)
+- [Examples](#examples)
+  - [Quick introduction](#quick-introduction)
+  - [Requirements](#requirements)
 - [Broker mode](#broker-mode)
 - [Threads](#threads)
 - [Approvals and user input](#approvals-and-user-input)
@@ -28,7 +28,11 @@
 - [Exit behavior](#exit-behavior)
 - [Clipboard utility](#clipboard-utility)
 
-## Quick introduction
+## Examples
+
+The [`examples/`](examples/README.md) directory contains small, commented scripts for every capability described below. Start with `intro.sh`, then use the examples index to find a focused broker, thread, approval, layered configuration, image attachment, prompt action, output, transport, completion, lifecycle, or exit-code workflow.
+
+### Quick introduction
 
 From the repository root, make the local launchers available and run the
 end-to-end introduction:
@@ -52,11 +56,7 @@ acceptance only in a controlled runner with an appropriate sandbox; omit the
 option to decline by default, or use `--interactive` when a human must approve
 each request.
 
-### Examples
-
-The [`examples/`](examples/README.md) directory contains small, commented scripts for every capability described below. Start with `intro.sh`, then use the examples index to find a focused broker, thread, approval, layered configuration, image attachment, prompt action, output, transport, completion, lifecycle, or exit-code workflow.
-
-## Requirements
+### Requirements
 
 - Node.js
 - The `codex` CLI installed and authenticated
