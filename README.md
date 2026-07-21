@@ -4,35 +4,31 @@
 
 ## Table of contents
 
+- [Quick introduction](#quick-introduction)
+- [Requirements](#requirements)
 - [Examples](#examples)
-  - [Quick introduction](#quick-introduction)
-  - [Requirements](#requirements)
-- [Broker mode](#broker-mode)
-- [Threads](#threads)
-- [Approvals and user input](#approvals-and-user-input)
-- [Client configuration](#client-configuration)
-  - [Environment overrides](#environment-overrides)
-- [Timeouts, active turns, and diagnostics](#timeouts-active-turns-and-diagnostics)
-- [Model and Codex configuration](#model-and-codex-configuration)
-  - [Raw app-server parameters](#raw-app-server-parameters)
-- [Agentic exit codes for scripts](#agentic-exit-codes-for-scripts)
-  - [Control the exit code from the prompt](#control-the-exit-code-from-the-prompt)
-- [Input and output](#input-and-output)
-- [Image attachments](#image-attachments)
-- [Prompt attachment actions](#prompt-attachment-actions)
-- [Special-purpose modes](#special-purpose-modes)
-  - [Direct mode](#direct-mode)
-  - [Existing app-server socket](#existing-app-server-socket)
-- [Bash completion](#bash-completion)
-- [Local files and lifecycle](#local-files-and-lifecycle)
-- [Exit behavior](#exit-behavior)
+  - [Broker mode](#broker-mode)
+  - [Threads](#threads)
+  - [Approvals and user input](#approvals-and-user-input)
+  - [Client configuration](#client-configuration)
+    - [Environment overrides](#environment-overrides)
+  - [Timeouts, active turns, and diagnostics](#timeouts-active-turns-and-diagnostics)
+  - [Model and Codex configuration](#model-and-codex-configuration)
+    - [Raw app-server parameters](#raw-app-server-parameters)
+  - [Agentic exit codes for scripts](#agentic-exit-codes-for-scripts)
+    - [Control the exit code from the prompt](#control-the-exit-code-from-the-prompt)
+  - [Input and output](#input-and-output)
+  - [Image attachments](#image-attachments)
+  - [Prompt attachment actions](#prompt-attachment-actions)
+  - [Special-purpose modes](#special-purpose-modes)
+    - [Direct mode](#direct-mode)
+    - [Existing app-server socket](#existing-app-server-socket)
+  - [Bash completion](#bash-completion)
+  - [Local files and lifecycle](#local-files-and-lifecycle)
+  - [Exit behavior](#exit-behavior)
 - [Clipboard utility](#clipboard-utility)
 
-## Examples
-
-The [`examples/`](examples/README.md) directory contains small, commented scripts for every capability described below. Start with `intro.sh`, then use the examples index to find a focused broker, thread, approval, layered configuration, image attachment, prompt action, output, transport, completion, lifecycle, or exit-code workflow.
-
-### Quick introduction
+## Quick introduction
 
 From the repository root, make the local launchers available and run the
 end-to-end introduction:
@@ -56,7 +52,7 @@ acceptance only in a controlled runner with an appropriate sandbox; omit the
 option to decline by default, or use `--interactive` when a human must approve
 each request.
 
-### Requirements
+## Requirements
 
 - Node.js
 - The `codex` CLI installed and authenticated
@@ -95,7 +91,11 @@ entries are available through the platform's normal launcher mechanism. The
 `codex` executable must also be available on `PATH` (or supplied with
 `--codex PATH`).
 
-## Broker mode
+## Examples
+
+The [`examples/`](examples/README.md) directory contains small, commented scripts for every capability described below. Start with `intro.sh`, then use the examples index to find a focused broker, thread, approval, layered configuration, image attachment, prompt action, output, transport, completion, lifecycle, or exit-code workflow.
+
+### Broker mode
 
 Broker mode is the primary way to use `codex-cli`. It keeps one local `codex app-server --stdio` process alive for the workspace, preserves the selected thread across CLI invocations, and supports normal prompts, scripts, approvals, user input, and agentic exit codes.
 
@@ -120,7 +120,7 @@ An implicit saved thread is intentionally replaced with a new one if the broker 
 Stop the workspace broker when it is no longer needed. The example stops only
 the broker instance that it started.
 
-## Threads
+### Threads
 
 Broker mode can list every non-deleted thread visible in the local Codex thread
 database, including archived and non-broker threads. The default output is
@@ -133,7 +133,7 @@ is also available. A thread ID may be passed explicitly for strict selection.
 
 Broker-created threads belong to the broker's running app-server. After a broker restart, the next implicit prompt starts a fresh thread. The old thread may still appear in `--broker threads`, but its ID is not assumed resumable by the new broker instance.
 
-## Approvals and user input
+### Approvals and user input
 
 Approval requests default to `decline` so automation does not accidentally
 authorize a command. Choose a policy explicitly; the example demonstrates an
@@ -145,7 +145,7 @@ and `sudo -n` so the command cannot block waiting for a password.
 ./examples/approvals-and-user-input.sh
 ```
 
-## Client configuration
+### Client configuration
 
 `codex-cli` loads optional JSON defaults in this order, with later sources
 overriding earlier scalar values:
@@ -209,7 +209,7 @@ the invocation workspace, or contains an unclassified raw app-server field.
 Warnings do not alter exit status and do not pollute JSON stdout. `--debug`
 also reports the winning source and classification for every effective field.
 
-### Environment overrides
+#### Environment overrides
 
 Most declared long options have an environment equivalent: remove the leading
 `--`, uppercase it, and replace hyphens with underscores. `CDX_CONFIG` is the
@@ -235,7 +235,7 @@ input to child processes. In particular, use non-interactive forms such as
 `sudo -n` for automated commands so a missing credential fails instead of
 waiting for a password prompt.
 
-## Timeouts, active turns, and diagnostics
+### Timeouts, active turns, and diagnostics
 
 The default timeout is 120 seconds. Set a longer time for work that is expected
 to take longer.
@@ -265,7 +265,7 @@ A definitive classification overrides an inconsistent `willRetry: true` notifica
 
 If Codex marks a turn interrupted, the CLI also prints any error message and additional diagnostic details supplied by the app-server. Use broker `--debug` to display turn lifecycle events; some app-server interruptions have no supplied reason.
 
-## Model and Codex configuration
+### Model and Codex configuration
 
 Use `--model` to set and remember a model for the selected workspace thread,
 and `--clear-model` to remove the remembered override. Codex still reads its
@@ -279,7 +279,7 @@ example uses the committed JSON files in `examples/`:
 
 The first implicit broker prompt also creates a thread, so it may use `--config-json` or `--thread-params` without a redundant `--new`.
 
-### Raw app-server parameters
+#### Raw app-server parameters
 
 `--thread-params` supplies a JSON object to `thread/start`; `--turn-params` supplies one to `turn/start`. Values can be inline or loaded from `@FILE`; the options may be repeated and are shallow-merged from left to right.
 
@@ -301,7 +301,7 @@ For experimental app-server fields, start the broker with
 `--experimental-api`. The model/configuration example supports this through
 its `EXPERIMENTAL_API` environment switch.
 
-## Agentic exit codes for scripts
+### Agentic exit codes for scripts
 
 Use `--agentic-error-code` with `codex-cli` or `cdx` when a script needs the
 prompt outcome in `$?`, rather than treating every completed Codex turn as
@@ -311,7 +311,7 @@ success. `hiai` enables this mode automatically:
 ./examples/agentic-exit-codes.sh
 ```
 
-### Control the exit code from the prompt
+#### Control the exit code from the prompt
 
 There is no separate CLI option for defining what codes `1-12` and `14-15`
 mean. Define each code and its condition directly in the prompt. The
@@ -348,7 +348,7 @@ standard output is exactly one validated object containing `goal_achieved`,
 
 System failures take precedence and do not attempt to parse or honor an agentic result. The shell exposes process statuses in the range `0-255`; this CLI does not assign new meanings to `126-127` or signal-style statuses `128-255`.
 
-## Input and output
+### Input and output
 
 Use a positional prompt, `--prompt`, or `--stdin`:
 
@@ -372,7 +372,7 @@ redirected or `--json` is active.
 
 Outside `--agentic-error-code`, `--json` emits newline-delimited raw app-server events instead of human-formatted output and is the lossless choice for scripts that need every protocol event. In agentic error-code mode it emits only the single validated result object described above.
 
-## Image attachments
+### Image attachments
 
 Attach one or more local images to the same user turn with repeatable `--image`
 options. The text prompt remains the first input item and images retain the
@@ -429,7 +429,7 @@ When a broker image turn times out, rerun the exact prompt with the same image
 paths and unchanged ordered file contents to reattach. The broker compares
 canonical paths and SHA-256 digests before it resumes a pending turn.
 
-## Prompt attachment actions
+### Prompt attachment actions
 
 Prompt actions are explicit markers interpreted by `codex-cli`. The first
 built-in action is `<clipboard>`, which inserts the currently selected
@@ -477,11 +477,11 @@ Run the repository copy explicitly as above, or put `./bin` first on `PATH`,
 so an older globally installed `codex-cli` does not forward `<clipboard>` as
 literal prompt text.
 
-## Special-purpose modes
+### Special-purpose modes
 
 Broker mode should be used for normal conversations and scripts. The following transports are add-ons for cases that need a different app-server lifecycle.
 
-### Direct mode
+#### Direct mode
 
 `--direct` launches an isolated, short-lived app-server process over standard I/O. Use it for broker-independent diagnostics, a one-process integration, or the direct REPL. Each invocation requires `--new` and cannot resume the broker's saved thread.
 
@@ -494,7 +494,7 @@ several terminal turns.
 
 Enter `/exit` or an empty line to leave the REPL.
 
-### Existing app-server socket
+#### Existing app-server socket
 
 Use the managed daemon or an explicit socket only when another process owns the
 app-server lifecycle. On macOS and Linux, pass the path of a Unix socket
@@ -512,7 +512,7 @@ app-server owns it:
 codex-cli --socket '\\.\pipe\codex-app-server' --new "Review the current change"
 ```
 
-## Bash completion
+### Bash completion
 
 After putting `bin/` on `PATH`, enable completion in the current Bash shell:
 
@@ -550,7 +550,7 @@ After sourcing, completion is registered for `codex-cli`, `cdx`, and `hiai`.
 When a name is not installed or present on `PATH`, the sourced code also
 supplies a shell function for it.
 
-## Local files and lifecycle
+### Local files and lifecycle
 
 Broker mode creates workspace-scoped files. On macOS and Linux these are:
 
@@ -571,7 +571,7 @@ The broker socket and metadata are owner-restricted. Do not expose the socket ov
 If code changes add a broker protocol feature, restart the broker to load it.
 The example demonstrates this only when it owns the running broker.
 
-## Exit behavior
+### Exit behavior
 
 Without `--agentic-error-code`, completed `codex-cli` and `cdx` prompts exit
 with status 0. `hiai` enables the mode by default. Invalid options, unavailable
