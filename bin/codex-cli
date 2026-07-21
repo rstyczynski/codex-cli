@@ -340,7 +340,7 @@ function agenticModeRequested(argv, environment = process.env) {
 
 const AGENTIC_RESULT_INSTRUCTIONS = `For script integration, your final assistant message must contain exactly one JSON object and no Markdown or other text:
 {"goal_achieved":boolean,"agentic_exit_code":integer,"summary":"short result","reason":"why the goal was or was not achieved"}
-Set goal_achieved to true only when the requested task is fully complete and no required work remains. Requested edits must be applied, and requested checks or tests must be completed unless the user explicitly allowed them to be skipped. Set it to false when work is partial, blocked, denied, impossible, materially uncertain, or missing required verification. Use agentic_exit_code 0 as the default when goal_achieved is true and 1 as the default when it is false. Codes 2-15 may be used only when the user's prompt explicitly defines their meaning; a caller-defined code may accompany either goal_achieved value. Never use code 13.`;
+Set goal_achieved to true only when the requested task is fully complete and no required work remains. Requested edits must be applied, and requested checks or tests must be completed unless the user explicitly allowed them to be skipped. Set it to false when work is partial, blocked, denied, impossible, materially uncertain, or missing required verification. Use agentic_exit_code 0 as the default when goal_achieved is true and 1 as the default when it is false. When the user's prompt explicitly assigns a code to an observed result, use that code even when the task was completed: codes 1-12 and 14-15 may accompany either goal_achieved value. Code 0 requires goal_achieved true. Never use code 13.`;
 
 const AGENTIC_RESULT_SCHEMA = {
   type: "object",
@@ -374,7 +374,6 @@ function parseAgenticResult(message) {
   }
   if (AGENTIC_RESERVED_EXIT_CODES.has(value.agentic_exit_code)) throw agenticContractError(`agentic_exit_code ${value.agentic_exit_code} is reserved`);
   if (value.agentic_exit_code === 0 && !value.goal_achieved) throw agenticContractError("agentic_exit_code 0 requires goal_achieved true");
-  if (value.agentic_exit_code === 1 && value.goal_achieved) throw agenticContractError("agentic_exit_code 1 requires goal_achieved false");
   if (typeof value.summary !== "string") throw agenticContractError("summary must be a string");
   if (typeof value.reason !== "string") throw agenticContractError("reason must be a string");
   return {

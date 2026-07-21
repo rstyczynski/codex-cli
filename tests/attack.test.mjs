@@ -452,10 +452,11 @@ test("A-13 rejects malformed agentic contracts and keeps system errors out of th
     [undefined, /message is missing/],
     ["not JSON", /not valid JSON/],
     ['{"goal_achieved":false,"agentic_exit_code":13,"summary":"reserved","reason":"invalid"}', /13 is reserved/],
-    ['{"goal_achieved":true,"agentic_exit_code":1,"summary":"wrong","reason":"invalid"}', /code 1 requires goal_achieved false/],
+    ['{"goal_achieved":false,"agentic_exit_code":0,"summary":"wrong","reason":"invalid"}', /code 0 requires goal_achieved true/],
   ]) {
     assert.throws(() => parseAgenticResult(message), (error) => error.exitCode === 72 && expected.test(error.message));
   }
+  assert.equal(parseAgenticResult('{"goal_achieved":true,"agentic_exit_code":1,"summary":"condition found","reason":"the completed check found it"}').agentic_exit_code, 1);
 
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli attack agentic "));

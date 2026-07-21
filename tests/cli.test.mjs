@@ -182,6 +182,10 @@ test("agentic error-code mode maps validated outcomes and preserves system failu
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, "goal incomplete\n");
 
+  result = invoke(workspace, ["--direct", "--new", "--agentic-error-code", "agentic custom success one"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout, "observed failing condition\n");
+
   result = invoke(workspace, ["--direct", "--new", "--agentic-error-code", "agentic custom two"]);
   assert.equal(result.status, 2, result.stderr);
   assert.equal(result.stdout, "caller outcome two\n");

@@ -34,6 +34,10 @@ test("agentic result contract is injected and strictly validated", () => {
     parseAgenticResult('{"goal_achieved":true,"agentic_exit_code":2,"summary":"rain expected","reason":"forecast checked"}'),
     { goal_achieved: true, agentic_exit_code: 2, summary: "rain expected", reason: "forecast checked" },
   );
+  assert.deepEqual(
+    parseAgenticResult('{"goal_achieved":true,"agentic_exit_code":1,"summary":"not Swiss","reason":"the image classification completed"}'),
+    { goal_achieved: true, agentic_exit_code: 1, summary: "not Swiss", reason: "the image classification completed" },
+  );
 
   for (const [message, expected] of [
     [undefined, /message is missing/],
@@ -43,7 +47,6 @@ test("agentic result contract is injected and strictly validated", () => {
     ['{"goal_achieved":false,"agentic_exit_code":16,"summary":"x"}', /integer from 0 to 15/],
     ['{"goal_achieved":false,"agentic_exit_code":13,"summary":"x"}', /13 is reserved/],
     ['{"goal_achieved":false,"agentic_exit_code":0,"summary":"x"}', /code 0 requires goal_achieved true/],
-    ['{"goal_achieved":true,"agentic_exit_code":1,"summary":"x"}', /code 1 requires goal_achieved false/],
     ['{"goal_achieved":true,"agentic_exit_code":0}', /summary must be a string/],
     ['{"goal_achieved":true,"agentic_exit_code":0,"summary":"x"}', /reason must be a string/],
     ['{"goal_achieved":true,"agentic_exit_code":0,"summary":"x","reason":3}', /reason must be a string/],

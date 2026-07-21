@@ -312,28 +312,33 @@ success. `hiai` enables this mode automatically:
 
 ### Control the exit code from the prompt
 
-There is no separate CLI option for defining what codes `2-15` mean. Define each custom code and its condition directly in the prompt. The instruction is natural language evaluated by Codex; `codex-cli` validates the returned result and copies `agentic_exit_code` to the process status, but it does not evaluate the condition itself.
+There is no separate CLI option for defining what codes `1-12` and `14-15`
+mean. Define each code and its condition directly in the prompt. The
+instruction is natural language evaluated by Codex; `codex-cli` validates the
+returned result and copies `agentic_exit_code` to the process status, but it
+does not evaluate the condition itself.
 
 Write the task and observable completion criteria first, then add ordered
 agentic exit-code rules that define each caller-specific condition. Include the
 default code `0` for an achieved goal and code `1` for an unachieved goal when
 no custom condition applies.
 
-Codes `0` and `1` already have default meanings. Custom codes are `2-12` and
-`14-15`; code `13` is reserved. State what should happen when several
-conditions match, usually by saying to evaluate the rules in order. A custom
-code may describe a successful result: for example, checking the weather can
-achieve its goal while returning code `2` to mean that rain is forecast. The
-example also shows how a `set -e` script captures and branches on nonzero
-agentic outcomes without confusing them with system failures.
+Code `0` is reserved for success. Code `1` defaults to an unachieved goal, but
+the prompt may explicitly use it for a completed check with a failing outcome.
+Codes `2-12` and `14-15` are likewise caller-defined; code `13` is reserved.
+State what should happen when several conditions match, usually by saying to
+evaluate the rules in order. For example, checking the weather can achieve its
+goal while returning code `2` to mean that rain is forecast. The example also
+shows how a `set -e` script captures and branches on nonzero agentic outcomes
+without confusing them with system failures.
 
 The mode appends conservative completion rules to the prompt and supplies a JSON Schema through `turn/start.outputSchema`. It then validates the final assistant message before choosing the process status. Codex makes the semantic judgment, so prompts should state observable success criteria such as required file changes, commands, and test results.
 
 Exit allocation in this mode is:
 
 - `0`: default outcome when Codex reports the prompt goal achieved.
-- `1`: default outcome when Codex reports the prompt goal not achieved.
-- `2-15`: caller-defined prompt outcomes that may accompany either goal state; `13` is reserved and rejected.
+- `1`: default outcome when Codex reports the prompt goal not achieved; the prompt may also explicitly use it for a completed check's failing outcome.
+- `2-12`, `14-15`: caller-defined prompt outcomes that may accompany either goal state; `13` is reserved and rejected.
 - `16+`: wrapper or system failures. Generic low-number failures are promoted to `70`; invalid or missing result contracts use `72`. Existing operational statuses such as broker busy (`75`), timeout (`124`), and interrupted turn (`130`) retain their meanings.
 
 Normal output is the result's `summary` followed by a newline. With `--json`,
@@ -585,7 +590,7 @@ already enables it. A standalone direct invocation uses
 The caller writes the task and its success conditions normally. `codex-cli` automatically adds the JSON result instructions and output schema; the caller does not need to ask Codex to return JSON. On completion, stdout contains only Codex's validated summary and the process status contains the result:
 
 - `0`: default code for goal achieved.
-- `1`: default code for goal not achieved.
+- `1`: default code for goal not achieved; it may also be an explicitly defined failing outcome after a completed check.
 - `2-12`, `14-15`: optional outcomes whose meanings must be defined in the caller's prompt; they may represent either an achieved or unachieved goal.
 - `13`: reserved and rejected.
 - `16+`: CLI, broker, app-server, timeout, interruption, or invalid-contract failure.

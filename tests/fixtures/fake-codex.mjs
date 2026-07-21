@@ -20,6 +20,7 @@ function complete(thread, turn, prompt, decision) {
   let agenticText;
   if (prompt.includes("agentic achieved")) agenticText = JSON.stringify({ goal_achieved: true, agentic_exit_code: 0, summary: "goal complete", reason: "requested work and checks completed" });
   else if (prompt.includes("agentic not achieved")) agenticText = JSON.stringify({ goal_achieved: false, agentic_exit_code: 1, summary: "goal incomplete", reason: "required work remains" });
+  else if (prompt.includes("agentic custom success one")) agenticText = JSON.stringify({ goal_achieved: true, agentic_exit_code: 1, summary: "observed failing condition", reason: "the requested check completed and found the caller-defined condition" });
   else if (prompt.includes("agentic custom success two")) agenticText = JSON.stringify({ goal_achieved: true, agentic_exit_code: 2, summary: "caller success outcome two", reason: "the caller-defined condition occurred after completing the task" });
   else if (prompt.includes("agentic custom two")) agenticText = JSON.stringify({ goal_achieved: false, agentic_exit_code: 2, summary: "caller outcome two", reason: "the caller-defined condition occurred" });
   else if (prompt.includes("agentic reserved thirteen")) agenticText = JSON.stringify({ goal_achieved: false, agentic_exit_code: 13, summary: "reserved", reason: "invalid test result" });

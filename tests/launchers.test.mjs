@@ -82,4 +82,8 @@ test("hiai enables agentic exits and accepts broker approval requests end to end
   result = invokeHiai(workspace, ["--new", "agentic not achieved"]);
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, "goal incomplete\n");
+
+  result = invokeHiai(workspace, ["--new", "agentic custom success one"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout, "observed failing condition\n");
 });
