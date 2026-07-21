@@ -24,20 +24,20 @@ necessarily reliable.
 
 | ID | Failure scenario | Expected result | Regression coverage |
 | --- | --- | --- | --- |
-| A-01 | Unknown flags, invalid enums, invalid JSON, missing `@FILE`, incompatible transports, or a missing prompt | Exit before Codex starts with status 2; agentic mode remaps wrapper failures to a system status | `tests/cli.test.mjs`, `tests/config.test.mjs` |
-| A-02 | Malformed, unreadable, or unknown-key client configuration | Fail before Codex starts; preserve source-aware diagnostics | `tests/config.test.mjs` |
-| A-03 | Auto-discovered project configuration widens approval, sandbox, executable, IPC, or raw-parameter authority | Apply documented configuration precedence and emit a warning when the auto-discovered value wins for a new thread | `tests/config.test.mjs` |
-| A-04 | Corrupt saved state or no saved thread | Refuse invalid state and require `--new` or an explicit thread instead of guessing | `tests/cli.test.mjs`, `tests/broker.test.mjs` |
+| A-01 | Unknown flags, invalid enums, invalid JSON, missing `@FILE`, incompatible transports, or a missing prompt | Exit before Codex starts with status 2; agentic mode remaps wrapper failures to a system status | `tests/attack.test.mjs`, `tests/cli.test.mjs`, `tests/config.test.mjs` |
+| A-02 | Malformed, unreadable, or unknown-key client configuration | Fail before Codex starts; preserve source-aware diagnostics | `tests/attack.test.mjs`, `tests/config.test.mjs` |
+| A-03 | Auto-discovered project configuration widens approval, sandbox, executable, IPC, or raw-parameter authority | Apply documented configuration precedence and emit a warning when the auto-discovered value wins for a new thread | `tests/attack.test.mjs`, `tests/config.test.mjs` |
+| A-04 | Corrupt saved state or no saved thread | Refuse invalid state and require `--new` or an explicit thread instead of guessing | `tests/attack.test.mjs`, `tests/cli.test.mjs`, `tests/broker.test.mjs` |
 | A-05 | A pre-created symlink uses the former predictable state temporary-file name | Write a random `wx` temporary file, atomically rename it, leave the victim unchanged, and create the state file owner-only | `tests/attack.test.mjs` |
-| A-06 | Image path is missing, not a regular file, empty, oversized, or has an unsupported signature | Reject before it reaches broker, direct, or socket transport | `tests/image-attachments.test.mjs` |
-| A-07 | A prompt uses an unknown `<action>` marker, clipboard MIME lies, image bytes mismatch their MIME, or a temporary attachment must be cleaned up | Fail closed before the app-server; do not leak clipboard data through output or state | `tests/prompt-attachment-actions.test.mjs` |
+| A-06 | Image path is missing, not a regular file, empty, oversized, or has an unsupported signature | Reject before it reaches broker, direct, or socket transport | `tests/attack.test.mjs`, `tests/image-attachments.test.mjs` |
+| A-07 | A prompt uses an unknown `<action>` marker, clipboard MIME lies, image bytes mismatch their MIME, or a temporary attachment must be cleaned up | Fail closed before the app-server; do not leak clipboard data through output or state | `tests/attack.test.mjs`, `tests/prompt-attachment-actions.test.mjs` |
 | A-08 | Clipboard helper writes excessive stdout or stderr | Stop capture once combined helper output exceeds 20 MiB; do not keep buffering attacker-controlled output | `tests/attack.test.mjs` |
-| A-09 | Broker receives invalid JSON, an over-4 MiB line, an incompatible version, wrong workspace, or malformed typed fields | Reply with a protocol error and close the peer without starting a turn | `tests/broker.test.mjs` |
-| A-10 | A peer attempts to stop another broker or forge approval/user-input responses | Reject unless the broker instance and active peer/request ID match | `tests/broker.test.mjs` |
-| A-11 | Broker app-server exits, returns system errors, reports empty session metadata transiently, or has a stale thread | Surface a concrete failure or recover only in the documented implicit-thread cases | `tests/broker.test.mjs` |
-| A-12 | Managed socket returns an invalid WebSocket upgrade, closes with a pending request, coalesces frames, or uses large payloads | Reject or decode without corrupting JSON-RPC request state | `tests/websocket.test.mjs`, `tests/socket-cli.test.mjs` |
-| A-13 | Agentic final output is malformed, missing, reserved, or a system failure occurs | Reject the contract with 72; retain system failures as 16+ statuses rather than presenting an agentic result | `tests/cli.test.mjs`, `tests/output.test.mjs` |
-| A-14 | Windows is asked to use the unavailable managed Unix socket or a non-pipe broker endpoint | Explain the supported transport and reject invalid endpoint forms | `tests/cli.test.mjs` |
+| A-09 | Broker receives invalid JSON, an over-4 MiB line, an incompatible version, wrong workspace, or malformed typed fields | Reply with a protocol error and close the peer without starting a turn | `tests/attack.test.mjs`, `tests/broker.test.mjs` |
+| A-10 | A peer attempts to stop another broker or forge approval/user-input responses | Reject unless the broker instance and active peer/request ID match | `tests/attack.test.mjs`, `tests/broker.test.mjs` |
+| A-11 | Broker app-server exits, returns system errors, reports empty session metadata transiently, or has a stale thread | Surface a concrete failure or recover only in the documented implicit-thread cases | `tests/attack.test.mjs`, `tests/broker.test.mjs` |
+| A-12 | Managed socket returns an invalid WebSocket upgrade, closes with a pending request, coalesces frames, or uses large payloads | Reject or decode without corrupting JSON-RPC request state | `tests/attack.test.mjs`, `tests/websocket.test.mjs`, `tests/socket-cli.test.mjs` |
+| A-13 | Agentic final output is malformed, missing, reserved, or a system failure occurs | Reject the contract with 72; retain system failures as 16+ statuses rather than presenting an agentic result | `tests/attack.test.mjs`, `tests/cli.test.mjs`, `tests/output.test.mjs` |
+| A-14 | Windows is asked to use the unavailable managed Unix socket or a non-pipe broker endpoint | Explain the supported transport and reject invalid endpoint forms | `tests/attack.test.mjs`, `tests/cli.test.mjs` |
 
 ## Source-Derived Hardening
 
