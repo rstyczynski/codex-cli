@@ -18,7 +18,7 @@
   - [Agentic exit codes for scripts](#agentic-exit-codes-for-scripts)
     - [Control the exit code from the prompt](#control-the-exit-code-from-the-prompt)
   - [Input and output](#input-and-output)
-  - [Image attachments]   (#image-attachments)
+  - [Image attachments](#image-attachments)
 - [Prompt attachment actions](#prompt-attachment-actions)
 - [Special-purpose modes](#special-purpose-modes)
   - [Direct mode](#direct-mode)
