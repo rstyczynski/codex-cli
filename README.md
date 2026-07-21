@@ -5,13 +5,13 @@
 ## Table of contents
 
 - [Quick introduction](#quick-introduction)
-- [Requirements](#requirements)
   - [Examples](#examples)
+- [Requirements](#requirements)
 - [Broker mode](#broker-mode)
 - [Threads](#threads)
 - [Approvals and user input](#approvals-and-user-input)
 - [Client configuration](#client-configuration)
-- [Environment overrides](#environment-overrides)
+  - [Environment overrides](#environment-overrides)
 - [Timeouts, active turns, and diagnostics](#timeouts-active-turns-and-diagnostics)
 - [Model and Codex configuration](#model-and-codex-configuration)
   - [Raw app-server parameters](#raw-app-server-parameters)
@@ -52,6 +52,10 @@ acceptance only in a controlled runner with an appropriate sandbox; omit the
 option to decline by default, or use `--interactive` when a human must approve
 each request.
 
+### Examples
+
+The [`examples/`](examples/README.md) directory contains small, commented scripts for every capability described below. Start with `intro.sh`, then use the examples index to find a focused broker, thread, approval, layered configuration, image attachment, prompt action, output, transport, completion, lifecycle, or exit-code workflow.
+
 ## Requirements
 
 - Node.js
@@ -90,10 +94,6 @@ absolute path to your Bash startup file. When installed with npm, its command
 entries are available through the platform's normal launcher mechanism. The
 `codex` executable must also be available on `PATH` (or supplied with
 `--codex PATH`).
-
-### Examples
-
-The [`examples/`](examples/README.md) directory contains small, commented scripts for every capability described below. Start with `intro.sh`, then use the examples index to find a focused broker, thread, approval, layered configuration, image attachment, prompt action, output, transport, completion, lifecycle, or exit-code workflow.
 
 ## Broker mode
 
