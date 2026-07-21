@@ -19,7 +19,9 @@ const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 function invoke(workspace, args, options = {}) {
   const home = options.home ?? path.join(workspace, "home");
   const nodeArgs = options.platform === "win32" ? ["--require", win32Platform, cli] : [cli];
-  return spawnSync(process.execPath, [...nodeArgs, "--cwd", workspace, "--codex", fakeCodex, ...args], {
+  const cwdArgs = options.cwd === false ? [] : ["--cwd", workspace];
+  const codexArgs = options.codex === false ? [] : ["--codex", options.codex ?? fakeCodex];
+  return spawnSync(process.execPath, [...nodeArgs, ...cwdArgs, ...codexArgs, ...args], {
     cwd: workspace,
     encoding: "utf8",
     timeout: 10000,
@@ -158,21 +160,29 @@ test("A-02 rejects malformed, unknown, and unreadable client configuration befor
 test("A-03 warns when auto-discovered configuration wins risky new-thread settings", async (t) => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli attack auto config "));
+  const outsideWorkspace = await mkdtemp("/tmp/cdx-a03-outside-");
   t.after(() => rm(workspace, { recursive: true, force: true }));
+  t.after(() => rm(outsideWorkspace, { recursive: true, force: true }));
   await writeJson(path.join(workspace, ".codex-cli", "config.json"), {
     direct: true,
     new: true,
+    cwd: outsideWorkspace,
+    codex: fakeCodex,
+    brokerSocket: "/tmp/cdx-auto-config.sock",
     approval: "accept-for-session",
     threadParams: { sandbox: "workspace-write", unclassifiedFutureSetting: true },
   });
 
-  let result = invoke(workspace, ["safe prompt"]);
+  let result = invoke(workspace, ["safe prompt"], { codex: false, cwd: false });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /warning: new thread uses approval=accept-for-session/);
+  assert.match(result.stderr, /warning: new thread uses codex=/);
+  assert.match(result.stderr, /warning: new thread uses brokerSocket=\/tmp\/cdx-auto-config\.sock/);
+  assert.match(result.stderr, /warning: new thread uses cwd=/);
   assert.match(result.stderr, /warning: new thread uses threadParams\.sandbox=workspace-write/);
   assert.match(result.stderr, /warning: new thread uses unclassified threadParams\.unclassifiedFutureSetting/);
 
-  result = invoke(workspace, ["--approval", "decline", "--thread-params", '{"sandbox":"read-only","unclassifiedFutureSetting":false}', "overridden prompt"]);
+  result = invoke(workspace, ["--broker-socket", "broker.sock", "--approval", "decline", "--thread-params", '{"sandbox":"read-only","unclassifiedFutureSetting":false}', "overridden prompt"]);
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stderr, /warning: new thread uses/);
 });
