@@ -4,9 +4,9 @@
 
 ## Table of contents
 
-- [Requirements](#requirements)
-- [Runnable examples](#runnable-examples)
 - [Quick introduction](#quick-introduction)
+- [Requirements](#requirements)
+- [Examples](#examples)
 - [Broker mode](#broker-mode)
 - [Threads](#threads)
 - [Approvals and user input](#approvals-and-user-input)
@@ -28,6 +28,30 @@
 - [Exit behavior](#exit-behavior)
 - [Clipboard utility](#clipboard-utility)
 
+## Quick introduction
+
+From the repository root, make the local launchers available and run the
+end-to-end introduction:
+
+```bash
+export PATH="$PWD/bin:$PATH"
+source <(codex-cli --bash-completion)
+./examples/intro.sh
+```
+
+The example starts the workspace broker when needed, opens a fresh Codex
+thread, automatically handles normal Codex approval requests for the session,
+shows actions as they happen, converts the agentic outcome to `$?`, and cleans
+up only the broker instance it started.
+
+`--approval accept-for-session` makes the broker answer Codex approval requests
+with session-wide acceptance, so the master script does not depend on another
+Codex UI or a terminal confirmation. Whether a command requests approval is
+still determined by the active Codex sandbox and policy. Use automatic
+acceptance only in a controlled runner with an appropriate sandbox; omit the
+option to decline by default, or use `--interactive` when a human must approve
+each request.
+
 ## Requirements
 
 - Node.js
@@ -40,38 +64,36 @@ Unix-socket transport, so on Windows use `--broker` or `--direct`; an explicit
 `--socket \\.\pipe\NAME` works when another process provides a compatible named
 pipe.
 
-Make the executable available on `PATH` by adding the repository's `bin/`
-directory or by installing this package. `cdx` is a short form of `codex-cli`;
-`hiai` invokes the same client with `--broker` automatically. On macOS or Linux,
-run the requirements and option-discovery example from the repository root:
+Make the executables and their Bash completion available in the current shell
+from the repository root:
 
 ```bash
-PATH="$PWD/bin:$PATH" ./examples/setup-and-help.sh
+export PATH="$PWD/bin:$PATH"
+source <(codex-cli --bash-completion)
 ```
 
-The script is self-contained and includes Bash completion. When installed with
-npm, its command entries are available through the platform's normal launcher
-mechanism. The `codex` executable must also be available on `PATH` (or supplied
-with `--codex PATH`).
+This makes `codex-cli`, `cdx`, and `hiai` available in this Bash session; it
+also registers completion for all three names. `hiai` automatically adds
+`--broker`. The `export` and `source` commands must run in the shell you intend
+to use. In particular, `PATH="$PWD/bin:$PATH" ./examples/setup-and-help.sh`
+sets `PATH` only for that one child process and cannot configure the calling
+shell.
 
-## Runnable examples
+Then run the requirements and option-discovery example:
+
+```bash
+./examples/setup-and-help.sh
+```
+
+To make this persistent, add equivalent commands using the repository's
+absolute path to your Bash startup file. When installed with npm, its command
+entries are available through the platform's normal launcher mechanism. The
+`codex` executable must also be available on `PATH` (or supplied with
+`--codex PATH`).
+
+## Examples
 
 The [`examples/`](examples/README.md) directory contains small, commented scripts for every capability described below. Start with `intro.sh`, then use the examples index to find a focused broker, thread, approval, layered configuration, image attachment, prompt action, output, transport, completion, lifecycle, or exit-code workflow.
-
-## Quick introduction
-
-The introduction example owns the complete workflow: it starts the broker when
-needed, opens a fresh Codex thread, automatically handles normal Codex approval
-requests for the session, shows actions as they happen, converts the agentic
-outcome to `$?`, and cleans up only the broker instance it started.
-
-`--approval accept-for-session` makes the broker answer Codex approval requests with session-wide acceptance, so the master script does not depend on another Codex UI or a terminal confirmation. Whether a command requests approval is still determined by the active Codex sandbox and policy. Use automatic acceptance only in a controlled runner with an appropriate sandbox; omit the option to decline by default, or use `--interactive` when a human must approve each request.
-
-Run the maintained [example script](examples/intro.sh) from the repository root:
-
-```bash
-./examples/intro.sh
-```
 
 ## Broker mode
 
@@ -484,7 +506,7 @@ codex-cli --socket '\\.\pipe\codex-app-server' --new "Review the current change"
 
 ## Bash completion
 
-Enable completion in the current Bash shell:
+After putting `bin/` on `PATH`, enable completion in the current Bash shell:
 
 ```bash
 source <(codex-cli --bash-completion)
@@ -516,8 +538,9 @@ registered completion definitions:
 
 It registers the same completion for `codex-cli`, `cdx`, and `hiai`, covering options, broker actions, file arguments, approval modes, models, and every registered prompt-action token. Model completion first uses Codex's local catalog cache and falls back to the local app-server when necessary. The model result is cached in Bash for 30 seconds.
 
-After sourcing, shell functions for `codex-cli`, `cdx`, and `hiai` are supplied
-for any of those command names that are not already installed.
+After sourcing, completion is registered for `codex-cli`, `cdx`, and `hiai`.
+When a name is not installed or present on `PATH`, the sourced code also
+supplies a shell function for it.
 
 ## Local files and lifecycle
 

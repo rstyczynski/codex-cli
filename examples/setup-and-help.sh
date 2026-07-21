@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This example does not start Codex. It verifies the three commands needed by
-# the other examples and shows where to discover all supported options.
-for command_name in node codex codex-cli; do
+# This example does not start Codex. It verifies the commands needed by the
+# other examples and shows where to discover all supported options.
+for command_name in node codex codex-cli cdx hiai; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     printf 'missing command: %s\n' "$command_name" >&2
     if [[ "$command_name" == codex-cli ]]; then
@@ -20,5 +20,7 @@ codex --version
 printf 'Codex authentication: '
 codex login status
 printf 'codex-cli: %s\n\n' "$(command -v codex-cli)"
+printf 'cdx: %s\n' "$(command -v cdx)"
+printf 'hiai: %s\n\n' "$(command -v hiai)"
 
 codex-cli --help
