@@ -18,7 +18,7 @@
   - [Agentic exit codes for scripts](#agentic-exit-codes-for-scripts)
     - [Control the exit code from the prompt](#control-the-exit-code-from-the-prompt)
   - [Input and output](#input-and-output)
-- [Image attachments](#image-attachments)
+  - [Image attachments]   (#image-attachments)
 - [Prompt attachment actions](#prompt-attachment-actions)
 - [Special-purpose modes](#special-purpose-modes)
   - [Direct mode](#direct-mode)
@@ -372,7 +372,7 @@ redirected or `--json` is active.
 
 Outside `--agentic-error-code`, `--json` emits newline-delimited raw app-server events instead of human-formatted output and is the lossless choice for scripts that need every protocol event. In agentic error-code mode it emits only the single validated result object described above.
 
-## Image attachments
+### Image attachments
 
 Attach one or more local images to the same user turn with repeatable `--image`
 options. The text prompt remains the first input item and images retain the
