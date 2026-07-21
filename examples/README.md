@@ -31,7 +31,7 @@ example only inspects configuration and does not contact Codex.
 | Input and output | [`input-and-output.sh`](input-and-output.sh) | Positional, flag, stdin, verbosity, and JSONL forms |
 | Direct mode | [`direct-mode.sh`](direct-mode.sh) | Isolated app-server turn and optional REPL |
 | Existing app-server socket | [`existing-socket.sh`](existing-socket.sh) | Connect to a socket owned by another process |
-| Bash completion | [`bash-completion.sh`](bash-completion.sh) | Load and inspect generated completion |
+| Bash completion | [`bash-completion.sh`](bash-completion.sh) | Complete options, models, and registered prompt-action tokens |
 | Local files and lifecycle | [`local-files-and-lifecycle.sh`](local-files-and-lifecycle.sh) | State files and safe broker restart/cleanup |
 | Exit behavior | [`exit-behavior.sh`](exit-behavior.sh) | Separate agent outcomes from system failures |
 

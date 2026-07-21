@@ -103,6 +103,9 @@ metadata, or diagnostics.
 - Mock the two `cpb-paste` calls for text, PNG, MIME/type mismatch, and
   unavailable clipboard cases.
 - Direct, broker, and socket transports send the same validated input items.
+- Bash completion derives every supported marker from the prompt-action
+  registry, preserves text before a marker, and corrects unmatched marker
+  prefixes to registered actions.
 - A generated schema test asserts the supported current image item shape.
 - A live parity test compares `codex --image` with `<clipboard>` using a
   deterministic fixture.

@@ -185,6 +185,7 @@ Delivered:
 - Preserve ordered surrounding text and insert clipboard text or a Codex-compatible local image input item in direct, broker, and socket transports.
 - Store clipboard images in owner-only `.codex-cli/session/` files; direct/socket clients remove them on exit, brokers remove them on shutdown, and broker startup removes stale leftovers.
 - Retain only action digests for active broker-turn matching and keep clipboard bytes out of output, state, and broker metadata.
+- Complete every registered prompt-action token in Bash, preserving preceding prompt text and correcting unmatched angle-bracket prefixes.
 - Cover text/image ordering, helper failures, MIME mismatch, cleanup, state redaction, and direct/broker/socket transport parity with fixture-driven tests.
 
 Design: `model/CDX-14-prompt-attachment-actions.md`.

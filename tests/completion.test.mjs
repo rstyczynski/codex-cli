@@ -184,6 +184,21 @@ test("option-name completion covers every public flag and both Bash-completion s
   assert.deepEqual(prompt.replies, []);
 });
 
+test("prompt completion offers every registered action token", () => {
+  const cases = [
+    { words: ["codex-cli", "<clip"], expected: ["<clipboard>"] },
+    { words: ["cdx", "Explain <clip"], expected: ["Explain <clipboard>"] },
+    { words: ["hiai", "<clip"], expected: ["<clipboard>"] },
+    { words: ["hiai", "<cliboard"], expected: ["<clipboard>"] },
+  ];
+
+  for (const { words, expected } of cases) {
+    const result = completion(words);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.replies, expected, words.join(" "));
+  }
+});
+
 test("enumerated values and broker option context complete precisely", () => {
   const cases = [
     { words: ["codex-cli", "--approval", "a"], expected: ["accept", "accept-for-session"] },

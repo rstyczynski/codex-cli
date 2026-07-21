@@ -424,6 +424,11 @@ remove it when they exit; a broker retains it until the broker exits, so the
 app-server can load the image asynchronously after acknowledging `turn/start`.
 Broker reattachment retains action SHA-256 digests, never clipboard bytes.
 
+After loading Bash completion, type an opening `<` in a prompt and press Tab to
+complete any registered prompt-action token. Completion preserves text before
+the marker and can correct an unmatched partial marker; for example,
+`<cliboard<Tab>` completes to `<clipboard>`.
+
 Copy text or an image, then run the maintained read-only example:
 
 ```bash
@@ -499,6 +504,7 @@ these commands and press Tab at `<Tab>`:
 codex-cli --bro<Tab>
 cdx --thr<Tab>
 hiai --model <Tab>
+hiai --prompt \<clip<Tab>
 ```
 
 The repository also includes an executable example that loads and displays the
@@ -508,7 +514,7 @@ registered completion definitions:
 ./examples/bash-completion.sh
 ```
 
-It registers the same completion for `codex-cli`, `cdx`, and `hiai`, covering options, broker actions, file arguments, approval modes, and models. Model completion first uses Codex's local catalog cache and falls back to the local app-server when necessary. The model result is cached in Bash for 30 seconds.
+It registers the same completion for `codex-cli`, `cdx`, and `hiai`, covering options, broker actions, file arguments, approval modes, models, and every registered prompt-action token. Model completion first uses Codex's local catalog cache and falls back to the local app-server when necessary. The model result is cached in Bash for 30 seconds.
 
 After sourcing, shell functions for `codex-cli`, `cdx`, and `hiai` are supplied
 for any of those command names that are not already installed.

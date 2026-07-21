@@ -664,6 +664,26 @@ test("broker rejects malformed and incompatible protocol messages", async (t) =>
   assert.equal(response.code, "INVALID_REQUEST");
   assert.match(response.message, /cwd does not match/);
 
+  const validRun = { version: 1, type: "run", new: true, cwd: workspace, prompt: "prompt", approval: "decline", timeout: 5 };
+  for (const [field, value, message] of [
+    ["new", "true", /broker new must be a boolean/],
+    ["interactive", "yes", /broker interactive must be a boolean/],
+    ["json", "yes", /broker json must be a boolean/],
+    ["interruptPending", "yes", /broker interruptPending must be a boolean/],
+    ["model", {}, /broker model must be a string or null/],
+  ]) {
+    response = await brokerExchange(socketPath, `${JSON.stringify({ ...validRun, [field]: value })}\n`);
+    assert.equal(response.code, "INVALID_REQUEST");
+    assert.match(response.message, message);
+  }
+
+  response = await brokerExchange(socketPath, `${JSON.stringify({ version: 1, type: "stop", instanceId: "other-broker" })}\n`);
+  assert.equal(response.code, "INSTANCE");
+  response = await brokerExchange(socketPath, `${JSON.stringify({ version: 1, type: "approval-response", requestId: "forged", decision: "accept" })}\n`);
+  assert.equal(response.code, "APPROVAL_ID");
+  response = await brokerExchange(socketPath, `${JSON.stringify({ version: 1, type: "user-input-response", requestId: "forged", answers: {} })}\n`);
+  assert.equal(response.code, "USER_INPUT_ID");
+
   result = invoke(workspace, "--broker", "--new", "--prompt", "failed turn");
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /simulated turn failure/);

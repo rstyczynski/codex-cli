@@ -17,4 +17,4 @@ printf 'completion definition:\n'
 complete -p codex-cli
 complete -p cdx
 complete -p hiai
-printf '\nTry typing: cdx --model <Tab> or hiai --thread <Tab>\n'
+printf '\nTry typing: cdx --model <Tab>, hiai --thread <Tab>, or hiai --prompt \\<clip<Tab>\n'

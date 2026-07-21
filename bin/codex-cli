@@ -75,6 +75,7 @@ const AGENTIC_SYSTEM_ERROR_EXIT_CODE = 70;
 const AGENTIC_CONTRACT_ERROR_EXIT_CODE = 72;
 const AGENTIC_RESERVED_EXIT_CODES = new Set([13]);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_CLIPBOARD_HELPER_OUTPUT_BYTES = 20 * 1024 * 1024;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const PACKAGED_CLIPBOARD_HELPER = fileURLToPath(new URL("./cpb-paste", import.meta.url));
 const CLIPBOARD_TEMP_PREFIX = "clipboard-";
@@ -662,11 +663,21 @@ async function readSavedState(statePath) {
   }
 }
 
-async function saveThread(statePath, threadId, model, extra = {}) {
-  await mkdir(path.dirname(statePath), { recursive: true });
-  const temporary = `${statePath}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify({ threadId, ...(model ? { model } : {}), ...extra }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  await rename(temporary, statePath);
+export async function saveThread(statePath, threadId, model, extra = {}) {
+  const directory = path.dirname(statePath);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = path.join(directory, `.${path.basename(statePath)}.${randomBytes(16).toString("hex")}.tmp`);
+  let handle;
+  try {
+    handle = await open(temporary, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify({ threadId, ...(model ? { model } : {}), ...extra }, null, 2)}\n`, "utf8");
+    await handle.close();
+    handle = undefined;
+    await rename(temporary, statePath);
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+    await unlinkIfPresent(temporary).catch(() => {});
+  }
 }
 
 async function validateWorkspace(workspace) {
@@ -795,15 +806,35 @@ function clipboardHelperPath() {
   return process.env.NODE_ENV === "test" ? process.env.CDXCLI_TEST_CLIPBOARD_HELPER ?? PACKAGED_CLIPBOARD_HELPER : PACKAGED_CLIPBOARD_HELPER;
 }
 
-function captureProcess(command, args) {
+export function captureProcess(command, args, { maxOutputBytes } = {}) {
   return new Promise((resolve) => {
     const stdoutChunks = [];
     const stderrChunks = [];
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
-    child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
-    child.once("error", (error) => resolve({ stdout: Buffer.concat(stdoutChunks), stderr: Buffer.concat(stderrChunks), error }));
-    child.once("close", (code) => resolve({ code, stdout: Buffer.concat(stdoutChunks), stderr: Buffer.concat(stderrChunks) }));
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    let child;
+    try { child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }); }
+    catch (error) { finish({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), error }); return; }
+    let outputBytes = 0;
+    const capture = (chunks) => (chunk) => {
+      if (settled) return;
+      const copy = Buffer.from(chunk);
+      outputBytes += copy.length;
+      if (maxOutputBytes !== undefined && outputBytes > maxOutputBytes) {
+        child.kill();
+        finish({ stdout: Buffer.concat(stdoutChunks), stderr: Buffer.concat(stderrChunks), error: new Error(`subprocess output exceeds ${maxOutputBytes} bytes`) });
+        return;
+      }
+      chunks.push(copy);
+    };
+    child.stdout.on("data", capture(stdoutChunks));
+    child.stderr.on("data", capture(stderrChunks));
+    child.once("error", (error) => finish({ stdout: Buffer.concat(stdoutChunks), stderr: Buffer.concat(stderrChunks), error }));
+    child.once("close", (code) => finish({ code, stdout: Buffer.concat(stdoutChunks), stderr: Buffer.concat(stderrChunks) }));
   });
 }
 
@@ -814,7 +845,7 @@ function clipboardFailure(result) {
 }
 
 async function readClipboardHelper(mode) {
-  const result = await captureProcess(process.execPath, [clipboardHelperPath(), mode]);
+  const result = await captureProcess(process.execPath, [clipboardHelperPath(), mode], { maxOutputBytes: MAX_CLIPBOARD_HELPER_OUTPUT_BYTES });
   if (result.error || result.code !== 0) throw new Error(`clipboard action failed: ${clipboardFailure(result)}`);
   return result.stdout;
 }
@@ -1172,11 +1203,13 @@ function bashCompletionScript(options) {
   const nodePath = shellSingleQuote(process.execPath);
   const scriptPath = shellSingleQuote(path.resolve(process.argv[1]));
   const codexPath = shellSingleQuote(options.codex);
+  const promptActions = shellSingleQuote([...PROMPT_ACTIONS.keys()].map((action) => `<${action}>`).join(" "));
   return [
     "# Bash completion for codex-cli. Source this output in Bash.",
     `_CODEX_CLI_NODE=${nodePath}`,
     `_CODEX_CLI_SCRIPT=${scriptPath}`,
     `_CODEX_CLI_DEFAULT_CODEX=${codexPath}`,
+    `_CODEX_CLI_PROMPT_ACTIONS=${promptActions}`,
     "",
     "_codex_cli_model_values() {",
     "  local completion_cwd=$1 completion_codex=$2 cache_key=\"$1|$2\"",
@@ -1209,6 +1242,21 @@ function bashCompletionScript(options) {
     "  while IFS= read -r candidate; do COMPREPLY+=(\"@$candidate\"); done < <(compgen -f -- \"$prefix\")",
     "}",
     "",
+    "_codex_cli_prompt_actions() {",
+    "  local current=$1 prefix marker action",
+    "  [[ $current == *'<'* ]] || return 1",
+    "  prefix=${current%<*}",
+    "  marker=\"<${current##*<}\"",
+    "  COMPREPLY=()",
+    "  for action in $_CODEX_CLI_PROMPT_ACTIONS; do",
+    "    [[ $action == \"$marker\"* ]] && COMPREPLY+=(\"$prefix$action\")",
+    "  done",
+    "  if ((${#COMPREPLY[@]} == 0)); then",
+    "    for action in $_CODEX_CLI_PROMPT_ACTIONS; do COMPREPLY+=(\"$prefix$action\"); done",
+    "  fi",
+    "  return 0",
+    "}",
+    "",
     "_codex_cli_complete() {",
     "  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}",
     "  local completion_cwd=$PWD completion_codex=$_CODEX_CLI_DEFAULT_CODEX index",
@@ -1229,6 +1277,7 @@ function bashCompletionScript(options) {
     "    --thread-params|--turn-params) _codex_cli_at_files \"$cur\"; return ;;",
     "    --codex) _codex_cli_compgen -c \"$cur\"; return ;;",
     "  esac",
+    "  if _codex_cli_prompt_actions \"$cur\"; then return; fi",
     "  if [[ ${COMP_WORDS[0]##*/} == hiai && $COMP_CWORD -eq 1 && $cur != -* ]]; then",
     "    _codex_cli_words 'start status stop threads' \"$cur\"; return",
     "  fi",
@@ -1795,6 +1844,9 @@ function validateBrokerRun(request, workspace) {
   if (request.version !== BROKER_VERSION || request.type !== "run") throw new Error("unsupported broker protocol message");
   if (path.resolve(request.cwd ?? "") !== workspace) throw new Error("broker request cwd does not match the broker workspace");
   if (typeof request.prompt !== "string" || !request.prompt.trim()) throw new Error("broker prompt is required");
+  if (typeof request.new !== "boolean") throw new Error("broker new must be a boolean");
+  if (request.threadId !== undefined && typeof request.threadId !== "string") throw new Error("broker threadId must be a string");
+  if (request.new && request.threadId !== undefined) throw new Error("broker new request cannot select a thread");
   if (request.promptParts === undefined) request.promptParts = promptActionParts(request.prompt);
   else validatePromptParts(request.promptParts);
   if (!["decline", "accept", "accept-for-session"].includes(request.approval)) throw new Error("invalid broker approval mode");
@@ -1802,8 +1854,12 @@ function validateBrokerRun(request, workspace) {
   if (!request.new && typeof request.threadId !== "string") throw new Error("broker request requires a threadId or new=true");
   if (request.autoNewOnStale !== undefined && typeof request.autoNewOnStale !== "boolean") throw new Error("broker autoNewOnStale must be a boolean");
   if (request.resumeActiveTurn !== undefined && typeof request.resumeActiveTurn !== "boolean") throw new Error("broker resumeActiveTurn must be a boolean");
+  if (request.interruptPending !== undefined && typeof request.interruptPending !== "boolean") throw new Error("broker interruptPending must be a boolean");
+  if (request.interactive !== undefined && typeof request.interactive !== "boolean") throw new Error("broker interactive must be a boolean");
+  if (request.json !== undefined && typeof request.json !== "boolean") throw new Error("broker json must be a boolean");
   if (request.debug !== undefined && typeof request.debug !== "boolean") throw new Error("broker debug must be a boolean");
   if (request.agenticErrorCode !== undefined && typeof request.agenticErrorCode !== "boolean") throw new Error("broker agenticErrorCode must be a boolean");
+  if (request.model !== undefined && request.model !== null && typeof request.model !== "string") throw new Error("broker model must be a string or null");
   if (request.verbosity !== undefined && !["low", "medium", "high"].includes(request.verbosity)) throw new Error("broker verbosity must be low, medium, or high");
   if (request.configWarnings !== undefined && (!Array.isArray(request.configWarnings) || request.configWarnings.some((warning) => typeof warning !== "string"))) throw new Error("broker configWarnings must be an array of strings");
   if (request.threadParamsSpecified !== undefined && typeof request.threadParamsSpecified !== "boolean") throw new Error("broker threadParamsSpecified must be a boolean");
