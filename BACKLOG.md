@@ -20,6 +20,7 @@
   - [CDX-6 Upstream Turn-Level Sandbox Enforcement](#cdx-6-upstream-turn-level-sandbox-enforcement)
   - [CDX-7 Install and Release Polish](#cdx-7-install-and-release-polish)
   - [CDX-8 Documentation Tightening](#cdx-8-documentation-tightening)
+  - [CDX-16 Transport-Wide Interactive Approval Coverage](#cdx-16-transport-wide-interactive-approval-coverage)
 
 ## Current State
 
@@ -228,6 +229,26 @@ Potential work:
 - Add a short troubleshooting section for authentication failures, broker restarts, stale threads, and sandbox expectations.
 - Add examples for attaching to known thread IDs and for safe read-only runs.
 - Keep `README.md`, `bin/README.md`, `BUGS.md`, and this backlog consistent after behavior changes.
+
+### CDX-16 Transport-Wide Interactive Approval Coverage
+
+Status: open.
+
+`v1.0.3` fixed a transport split where `--interactive` prompted for command
+approval in direct mode but silently declined it in existing app-server socket
+mode. Broker mode has its own request/response bridge. Current tests verify
+the non-terminal fail-closed behavior for broker and socket transports, but do
+not drive a real terminal prompt across every transport.
+
+Remaining work:
+
+- Add portable PTY-backed integration coverage for `accept` and `decline` in
+  direct, broker, and existing-socket modes.
+- Keep a non-terminal assertion that `--interactive` fails before a turn
+  starts, rather than silently supplying an approval decision.
+- Verify that interactive handling answers Codex protocol requests only and
+  never forwards terminal input to child commands.
+- Document any platform-specific PTY limitations or test skips explicitly.
 
 ### CDX-15 hiai Broker Launcher Regression
 
