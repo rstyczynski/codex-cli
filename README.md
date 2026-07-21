@@ -18,14 +18,14 @@
   - [Agentic exit codes for scripts](#agentic-exit-codes-for-scripts)
     - [Control the exit code from the prompt](#control-the-exit-code-from-the-prompt)
   - [Input and output](#input-and-output)
-  - [Image attachments](#image-attachments)
-  - [Prompt attachment actions](#prompt-attachment-actions)
-  - [Special-purpose modes](#special-purpose-modes)
-    - [Direct mode](#direct-mode)
-    - [Existing app-server socket](#existing-app-server-socket)
-  - [Bash completion](#bash-completion)
-  - [Local files and lifecycle](#local-files-and-lifecycle)
-  - [Exit behavior](#exit-behavior)
+- [Image attachments](#image-attachments)
+- [Prompt attachment actions](#prompt-attachment-actions)
+- [Special-purpose modes](#special-purpose-modes)
+  - [Direct mode](#direct-mode)
+  - [Existing app-server socket](#existing-app-server-socket)
+- [Bash completion](#bash-completion)
+- [Local files and lifecycle](#local-files-and-lifecycle)
+- [Exit behavior](#exit-behavior)
 - [Clipboard utility](#clipboard-utility)
 
 ## Quick introduction
@@ -372,7 +372,7 @@ redirected or `--json` is active.
 
 Outside `--agentic-error-code`, `--json` emits newline-delimited raw app-server events instead of human-formatted output and is the lossless choice for scripts that need every protocol event. In agentic error-code mode it emits only the single validated result object described above.
 
-### Image attachments
+## Image attachments
 
 Attach one or more local images to the same user turn with repeatable `--image`
 options. The text prompt remains the first input item and images retain the
@@ -429,7 +429,7 @@ When a broker image turn times out, rerun the exact prompt with the same image
 paths and unchanged ordered file contents to reattach. The broker compares
 canonical paths and SHA-256 digests before it resumes a pending turn.
 
-### Prompt attachment actions
+## Prompt attachment actions
 
 Prompt actions are explicit markers interpreted by `codex-cli`. The first
 built-in action is `<clipboard>`, which inserts the currently selected
@@ -477,11 +477,11 @@ Run the repository copy explicitly as above, or put `./bin` first on `PATH`,
 so an older globally installed `codex-cli` does not forward `<clipboard>` as
 literal prompt text.
 
-### Special-purpose modes
+## Special-purpose modes
 
 Broker mode should be used for normal conversations and scripts. The following transports are add-ons for cases that need a different app-server lifecycle.
 
-#### Direct mode
+### Direct mode
 
 `--direct` launches an isolated, short-lived app-server process over standard I/O. Use it for broker-independent diagnostics, a one-process integration, or the direct REPL. Each invocation requires `--new` and cannot resume the broker's saved thread.
 
@@ -494,7 +494,7 @@ several terminal turns.
 
 Enter `/exit` or an empty line to leave the REPL.
 
-#### Existing app-server socket
+### Existing app-server socket
 
 Use the managed daemon or an explicit socket only when another process owns the
 app-server lifecycle. On macOS and Linux, pass the path of a Unix socket
@@ -512,7 +512,7 @@ app-server owns it:
 codex-cli --socket '\\.\pipe\codex-app-server' --new "Review the current change"
 ```
 
-### Bash completion
+## Bash completion
 
 After putting `bin/` on `PATH`, enable completion in the current Bash shell:
 
@@ -550,7 +550,7 @@ After sourcing, completion is registered for `codex-cli`, `cdx`, and `hiai`.
 When a name is not installed or present on `PATH`, the sourced code also
 supplies a shell function for it.
 
-### Local files and lifecycle
+## Local files and lifecycle
 
 Broker mode creates workspace-scoped files. On macOS and Linux these are:
 
@@ -571,7 +571,7 @@ The broker socket and metadata are owner-restricted. Do not expose the socket ov
 If code changes add a broker protocol feature, restart the broker to load it.
 The example demonstrates this only when it owns the running broker.
 
-### Exit behavior
+## Exit behavior
 
 Without `--agentic-error-code`, completed `codex-cli` and `cdx` prompts exit
 with status 0. `hiai` enables the mode by default. Invalid options, unavailable
