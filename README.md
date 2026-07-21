@@ -74,8 +74,8 @@ source <(codex-cli --bash-completion)
 
 This makes `codex-cli`, `cdx`, and `hiai` available in this Bash session; it
 also registers completion for all three names. `hiai` automatically adds
-`--broker`. The `export` and `source` commands must run in the shell you intend
-to use. In particular, `PATH="$PWD/bin:$PATH" ./examples/setup-and-help.sh`
+`--broker --agentic-error-code`. The `export` and `source` commands must run in
+the shell you intend to use. In particular, `PATH="$PWD/bin:$PATH" ./examples/setup-and-help.sh`
 sets `PATH` only for that one child process and cannot configure the calling
 shell.
 
@@ -99,12 +99,12 @@ The [`examples/`](examples/README.md) directory contains small, commented script
 
 Broker mode is the primary way to use `codex-cli`. It keeps one local `codex app-server --stdio` process alive for the workspace, preserves the selected thread across CLI invocations, and supports normal prompts, scripts, approvals, user input, and agentic exit codes.
 
-The `hiai` launcher selects broker mode automatically, so these commands are
-equivalent:
+The `hiai` launcher selects broker mode and agentic exit-code mode
+automatically, so these commands are equivalent:
 
 ```bash
 hiai --new "Summarize the current Git status"
-codex-cli --broker --new "Summarize the current Git status"
+codex-cli --broker --agentic-error-code --new "Summarize the current Git status"
 ```
 
 ```bash
@@ -302,7 +302,9 @@ its `EXPERIMENTAL_API` environment switch.
 
 ## Agentic exit codes for scripts
 
-Use `--agentic-error-code` when a script needs the prompt outcome in `$?`, rather than treating every completed Codex turn as success:
+Use `--agentic-error-code` with `codex-cli` or `cdx` when a script needs the
+prompt outcome in `$?`, rather than treating every completed Codex turn as
+success. `hiai` enables this mode automatically:
 
 ```bash
 ./examples/agentic-exit-codes.sh
@@ -565,18 +567,20 @@ The example demonstrates this only when it owns the running broker.
 
 ## Exit behavior
 
-Without `--agentic-error-code`, completed prompts exit with status 0. Invalid
-options, unavailable threads, and app-server errors generally exit nonzero. A
-timeout exits with status 124; an interrupted turn exits with status 130; a
-broker already serving another turn exits with status 75.
+Without `--agentic-error-code`, completed `codex-cli` and `cdx` prompts exit
+with status 0. `hiai` enables the mode by default. Invalid options, unavailable
+threads, and app-server errors generally exit nonzero. A timeout exits with
+status 124; an interrupted turn exits with status 130; a broker already serving
+another turn exits with status 75.
 
 ```bash
 ./examples/exit-behavior.sh
 ```
 
 To use agentic exit codes with the broker, start or restart it once, then add
-`--agentic-error-code` to the prompt invocation. A standalone direct invocation
-uses `--direct --new --agentic-error-code`.
+`--agentic-error-code` to a `codex-cli` or `cdx` prompt invocation. `hiai`
+already enables it. A standalone direct invocation uses
+`--direct --new --agentic-error-code`.
 
 The caller writes the task and its success conditions normally. `codex-cli` automatically adds the JSON result instructions and output schema; the caller does not need to ask Codex to return JSON. On completion, stdout contains only Codex's validated summary and the process status contains the result:
 

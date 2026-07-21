@@ -14,8 +14,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# hiai selects broker mode. Automatic approval is appropriate only in a
-# controlled sandbox. Decisions are appended to the TOML audit log.
+# hiai selects broker and agentic exit-code modes. Automatic approval is
+# appropriate only in a controlled sandbox. Decisions are appended to the TOML
+# audit log.
 hiai --new \
   --approval accept \
   --approval-log .codex-cli/example-approvals.toml \

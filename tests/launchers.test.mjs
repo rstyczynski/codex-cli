@@ -24,7 +24,7 @@ function invokeHiai(workspace, args) {
   });
 }
 
-test("hiai launcher selects broker mode and preserves arguments", async (t) => {
+test("hiai launcher selects broker agentic mode and preserves arguments", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex hiai launcher "));
   t.after(() => rm(workspace, { recursive: true, force: true }));
   const launcher = path.join(workspace, "hiai");
@@ -44,7 +44,7 @@ test("hiai launcher selects broker mode and preserves arguments", async (t) => {
   });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), [
-    "--broker", "--new", "sudo whoami", "--timeout", "10", "--approval", "accept",
+    "--broker", "--new", "sudo whoami", "--timeout", "10", "--approval", "accept", "--agentic-error-code",
   ]);
 
   const action = spawnSync(launcher, ["status", "--cwd", "/workspace"], {
@@ -52,7 +52,7 @@ test("hiai launcher selects broker mode and preserves arguments", async (t) => {
     timeout: 10000,
   });
   assert.equal(action.status, 0, action.stderr);
-  assert.deepEqual(JSON.parse(action.stdout), ["--broker", "status", "--cwd", "/workspace"]);
+  assert.deepEqual(JSON.parse(action.stdout), ["--broker", "status", "--cwd", "/workspace", "--agentic-error-code"]);
 });
 
 test("package installs hiai through its broker launcher", async () => {
@@ -60,7 +60,7 @@ test("package installs hiai through its broker launcher", async () => {
   assert.equal(packageJson.bin.hiai, "bin/hiai");
 });
 
-test("hiai receives and accepts a broker approval request end to end", async (t) => {
+test("hiai enables agentic exits and accepts broker approval requests end to end", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex hiai approval "));
   t.after(() => {
     invokeHiai(workspace, ["stop"]);
@@ -73,9 +73,13 @@ test("hiai receives and accepts a broker approval request end to end", async (t)
   assert.match(result.stderr, /broker started/);
 
   result = invokeHiai(workspace, [
-    "--new", "--approval", "accept-for-session", "approve through hiai",
+    "--new", "--approval", "accept-for-session", "agentic achieved approve through hiai",
   ]);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /\[acceptForSession\]/);
+  assert.equal(result.stdout, "goal complete\n");
   assert.match(result.stderr, /approval requested for echo approved; acceptForSession/);
+
+  result = invokeHiai(workspace, ["--new", "agentic not achieved"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout, "goal incomplete\n");
 });

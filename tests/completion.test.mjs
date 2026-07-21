@@ -139,7 +139,7 @@ test("sourcing registers codex-cli aliases without replacing existing shell hand
   assert.doesNotMatch(result.stdout, /-F _codex_cli_node_complete node/);
 });
 
-test("generated hiai fallback selects broker mode", () => {
+test("generated hiai fallback selects broker agentic mode", () => {
   const result = runBash([
     "PATH=",
     "unset -f hiai 2>/dev/null || true",
@@ -148,6 +148,7 @@ test("generated hiai fallback selects broker mode", () => {
   ].join("\n"));
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).values.broker, true);
+  assert.equal(JSON.parse(result.stdout).values.agenticErrorCode, true);
 });
 
 test("option-name completion covers every public flag and both Bash-completion spellings", () => {

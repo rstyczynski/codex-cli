@@ -1293,7 +1293,7 @@ function bashCompletionScript(options) {
     "  cdx() { \"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" \"$@\"; }",
     "fi",
     "if ! type -t hiai >/dev/null 2>&1; then",
-    "  hiai() { \"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --broker \"$@\"; }",
+    "  hiai() { \"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --broker \"$@\" --agentic-error-code; }",
     "fi",
     "complete -o default -o bashdefault -F _codex_cli_complete codex-cli cdx hiai",
     "_codex_cli_node_complete() {",
