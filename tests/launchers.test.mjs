@@ -65,7 +65,7 @@ test("cdx and hiai expose the shared version without starting Codex", () => {
   for (const command of [cdx, hiai]) {
     const result = spawnSync(command, ["--version"], { encoding: "utf8", timeout: 10000 });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, "codex-cli 1.0.10\n");
+    assert.equal(result.stdout, "codex-cli 1.0.11\n");
     assert.equal(result.stderr, "");
   }
 });

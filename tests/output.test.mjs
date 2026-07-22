@@ -16,9 +16,24 @@ test("verbosity defaults to low and accepts every documented level", () => {
   assert.throws(() => parseArgs(["--verbosity", "debug"]), /must be low, medium, or high/);
 });
 
-test("progress defaults to enabled", () => {
+test("boolean CLI options accept case-insensitive optional values", () => {
   assert.equal(parseArgs([]).progress, true);
   assert.equal(parseArgs([]).interim, true);
+  for (const value of ["true", "on", "1", "yes", "TrUe", "YeS"]) {
+    assert.equal(parseArgs(["--interim", value]).interim, true, value);
+  }
+  for (const value of ["false", "off", "0", "no", "FaLsE", "NO"]) {
+    assert.equal(parseArgs(["--interim", value]).interim, false, value);
+  }
+  for (const [flag, key] of [
+    ["--help", "help"], ["--version", "version"], ["--direct", "direct"], ["--broker-serve", "brokerServe"],
+    ["--new", "new"], ["--clear-model", "clearModel"], ["--start-daemon", "startDaemon"], ["--experimental-api", "experimentalApi"],
+    ["--bash_completion", "bashCompletion"], ["--interactive", "interactive"], ["--repl", "repl"], ["--interrupt-pending", "interruptPending"],
+    ["--progress", "progress"], ["--debug", "debug"], ["--agentic-error-code", "agenticErrorCode"], ["--json", "json"], ["--stdin", "stdin"],
+    ["--completion-models", "completionModels"], ["--completion-cached-models", "completionCachedModels"],
+  ]) assert.equal(parseArgs([flag, "false"])[key], false, flag);
+  assert.equal(parseArgs(["--broker", "false"]).broker, false);
+  assert.equal(parseArgs(["--broker", "start"]).brokerAction, "start");
   assert.equal(parseArgs(["--agentic-error-code"]).agenticErrorCode, true);
 });
 
@@ -199,7 +214,7 @@ test("progress spinner advances only when an event advances it and clears cleanl
 test("welcome banner writes only to an interactive terminal and excludes machine-readable modes", () => {
   const writes = [];
   showWelcomeBanner({ json: false, agenticErrorCode: false }, { isTTY: true, write: (chunk) => writes.push(chunk) });
-  assert.deepEqual(writes, ["codex-cli v1.0.10 — ready\n"]);
+  assert.deepEqual(writes, ["codex-cli v1.0.11 — ready\n"]);
 
   for (const options of [{ json: true, agenticErrorCode: false }, { json: false, agenticErrorCode: true }]) {
     const suppressed = [];
@@ -209,5 +224,5 @@ test("welcome banner writes only to an interactive terminal and excludes machine
 
   const brokerStart = [];
   showWelcomeBanner({ json: true, agenticErrorCode: true }, { isTTY: false, write: (chunk) => brokerStart.push(chunk) }, true);
-  assert.deepEqual(brokerStart, ["codex-cli v1.0.10 — ready\n"]);
+  assert.deepEqual(brokerStart, ["codex-cli v1.0.11 — ready\n"]);
 });

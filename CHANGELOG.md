@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.11
+
+- Let every Boolean option accept an optional, case-insensitive value: `true`/`false`, `on`/`off`, `1`/`0`, or `yes`/`no`.
+- Add Bash completion for Boolean values, including `--interim false`, `--interim off`, `--interim 0`, and `--interim no`.
+
 ## 1.0.10
 
 - Reduced default interim noise: `low` now shows assistant updates only, `medium` adds concise reasoning and plans, and raw operational activity is reserved for `high` verbosity.

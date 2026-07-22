@@ -134,7 +134,7 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
 
   let result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /codex-cli v1\.0\.10 — ready/);
+  assert.match(result.stderr, /codex-cli v1\.0\.11 — ready/);
   assert.match(result.stderr, /broker started/);
   assert.equal((await stat(path.join(workspace, "broker.sock"))).mode & 0o777, 0o600);
 

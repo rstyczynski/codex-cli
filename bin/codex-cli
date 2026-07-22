@@ -51,7 +51,7 @@ Options:
   --interrupt-pending   Interrupt active turns in the selected thread before starting
   --verbosity LEVEL     Human output: low (default), medium, or high
   --progress            Show an event-driven spinner while waiting for visible output on a terminal (default: enabled)
-  --interim             Show interim Codex activity while a turn runs (default: enabled)
+  --interim [BOOLEAN]   Show interim Codex activity while a turn runs (default: enabled)
   --debug               Log app-server requests, events, and turn status to standard error
   --agentic-error-code  Map Codex's validated final result to process exit status 0-15
   --json               Emit raw JSON events and, when requested, the validated agentic result
@@ -75,7 +75,7 @@ Examples:
 const AGENTIC_SYSTEM_ERROR_EXIT_CODE = 70;
 const AGENTIC_CONTRACT_ERROR_EXIT_CODE = 72;
 const AGENTIC_RESERVED_EXIT_CODES = new Set([13]);
-const CLI_VERSION = "1.0.10";
+const CLI_VERSION = "1.0.11";
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_HELPER_OUTPUT_BYTES = 20 * 1024 * 1024;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -196,6 +196,10 @@ function booleanValue(value, label) {
   throw new Error(`${label} must be true or false`);
 }
 
+function isBooleanValue(value) {
+  return typeof value === "string" && ["1", "true", "yes", "on", "0", "false", "no", "off"].includes(value.toLowerCase());
+}
+
 function sourceDescription(source) {
   if (!source || source.kind === "default") return "built-in default";
   if (source.kind === "environment") return source.name;
@@ -224,7 +228,7 @@ function setOptionSource(options, definition, source) {
 function assignOption(options, definition, value, source) {
   const label = optionLabel(definition, source);
   if (definition.kind === "boolean") {
-    if (source.kind === "command") options[definition.key] = true;
+    if (source.kind === "command") options[definition.key] = value === undefined ? true : booleanValue(value, label);
     else if (source.kind === "environment") options[definition.key] = booleanValue(value, label);
     else {
       if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
@@ -236,8 +240,13 @@ function assignOption(options, definition, value, source) {
       if (BROKER_ACTIONS.includes(value)) { options.broker = true; options.brokerAction = value; }
       else { options.broker = booleanValue(value, label); if (!options.broker) options.brokerAction = undefined; }
     } else if (source.kind === "command") {
-      options.broker = true;
-      if (BROKER_ACTIONS.includes(value)) options.brokerAction = value;
+      if (BROKER_ACTIONS.includes(value)) {
+        options.broker = true;
+        options.brokerAction = value;
+      } else {
+        options.broker = value === undefined ? true : booleanValue(value, label);
+        if (!options.broker) options.brokerAction = undefined;
+      }
     } else if (typeof value === "boolean") {
       options.broker = value;
       if (!value) options.brokerAction = undefined;
@@ -310,8 +319,14 @@ function parseArgs(argv, options = createDefaultOptions(process.cwd())) {
       continue;
     }
     const source = { kind: "command", flag: argument };
-    if (definition.kind === "boolean") assignOption(options, definition, undefined, source);
-    else if (definition.kind === "broker") assignOption(options, definition, BROKER_ACTIONS.includes(argv[index + 1]) ? argv[++index] : undefined, source);
+    if (definition.kind === "boolean") {
+      const value = isBooleanValue(argv[index + 1]) ? argv[++index] : undefined;
+      assignOption(options, definition, value, source);
+    }
+    else if (definition.kind === "broker") {
+      const value = BROKER_ACTIONS.includes(argv[index + 1]) || isBooleanValue(argv[index + 1]) ? argv[++index] : undefined;
+      assignOption(options, definition, value, source);
+    }
     else if (definition.kind === "show-config") {
       const value = argv[index + 1] && !argv[index + 1].startsWith("-") ? argv[++index] : "set";
       assignOption(options, definition, value, source);
@@ -337,7 +352,10 @@ function configurationBootstrap(argv, invocationCwd) {
 }
 
 function agenticModeRequested(argv, environment = process.env) {
-  if (argv.includes("--agentic-error-code")) return true;
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== "--agentic-error-code") continue;
+    return isBooleanValue(argv[index + 1]) ? booleanValue(argv[index + 1], "--agentic-error-code") : true;
+  }
   const value = environmentValue("CDXCLI_AGENTIC_ERROR_CODE", environment);
   return typeof value === "string" && ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
@@ -1242,6 +1260,12 @@ function bashCompletionScript(options) {
     "  while IFS= read -r candidate; do COMPREPLY+=(\"$candidate\"); done < <(compgen -W \"$values\" -- \"$prefix\")",
     "}",
     "",
+    "_codex_cli_boolean_values() {",
+    "  local prefix=$1 folded_prefix candidate",
+    "  folded_prefix=$(printf '%s' \"$prefix\" | tr '[:upper:]' '[:lower:]')",
+    "  for candidate in true on 1 yes false off 0 no; do [[ $candidate == \"$folded_prefix\"* ]] && COMPREPLY+=(\"$candidate\"); done",
+    "}",
+    "",
     "_codex_cli_at_files() {",
     "  local prefix=${1#@}",
     "  local candidate",
@@ -1278,7 +1302,8 @@ function bashCompletionScript(options) {
     "    --approval) _codex_cli_words 'decline accept accept-for-session' \"$cur\"; return ;;",
     "    --verbosity) _codex_cli_words 'low medium high' \"$cur\"; return ;;",
     "    --show-config) if [[ $cur != -* ]]; then _codex_cli_words 'set all' \"$cur\"; return; fi ;;",
-    "    --broker) if [[ $cur != -* ]]; then _codex_cli_words 'start status stop threads' \"$cur\"; return; fi ;;",
+    "    --broker) if [[ $cur != -* ]]; then _codex_cli_words 'start status stop threads' \"$cur\"; _codex_cli_boolean_values \"$cur\"; return; fi ;;",
+    "    --help|-h|--version|--direct|--broker-serve|--new|--clear-model|--start-daemon|--experimental-api|--bash_completion|--bash-completion|--interactive|--repl|--interrupt-pending|--progress|--interim|--debug|--agentic-error-code|--json|--stdin) if [[ $cur != -* ]]; then _codex_cli_boolean_values \"$cur\"; return; fi ;;",
     "    --cwd) _codex_cli_compgen -d \"$cur\"; return ;;",
     "    --socket|--broker-socket|--state|--approval-log|--config|--config-json|--image) _codex_cli_compgen -f \"$cur\"; return ;;",
     "    --thread-params|--turn-params) _codex_cli_at_files \"$cur\"; return ;;",

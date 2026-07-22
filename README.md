@@ -242,7 +242,7 @@ CI defaults without unsetting them first.
 ./examples/env-config.sh
 ```
 
-For example, `--broker-socket` maps to `CDXCLI_BROKER_SOCKET`, `--thread-params` maps to `CDXCLI_THREAD_PARAMS`, and `--bash_completion` maps to `CDXCLI_BASH_COMPLETION`. Boolean values accept `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`; `CDXCLI_BROKER` also accepts `start`, `status`, `stop`, or `threads`.
+For example, `--broker-socket` maps to `CDXCLI_BROKER_SOCKET`, `--thread-params` maps to `CDXCLI_THREAD_PARAMS`, and `--bash_completion` maps to `CDXCLI_BASH_COMPLETION`. Every Boolean option accepts an optional, case-insensitive value on the command line or through its environment variable: `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`. A Boolean flag with no value enables it, so `--interim false`, `--interim off`, `--interim 0`, and `--interim no` all disable interim output. `--broker` also accepts `start`, `status`, `stop`, or `threads`.
 
 Use `--approval-log` to record each approval request and decision. Use
 `--interactive` to answer Codex approval prompts and structured questions from
