@@ -111,9 +111,26 @@ codex-cli --broker --agentic-error-code --new "Summarize the current Git status"
 ./examples/broker-mode.sh
 ```
 
-The first prompt automatically creates a thread. The selected thread is saved in `.codex-cli/codex-cli.json`, so later broker invocations continue it without requiring `--thread` or `--new`.
+The first prompt automatically creates a thread. The selected thread is saved in `.codex-cli/codex-cli.json`, so later broker invocations continue it without requiring `--thread` or `--new`. When `--cwd` is not supplied, broker mode resolves this directory to the Git worktree root; outside a Git worktree it uses `~/.codex-cli`. This gives every repository one stable broker regardless of the subdirectory from which `hiai` is run.
 
 One broker serves one workspace and permits one active turn at a time. A second prompt while a turn is active exits with a busy error. Use `--interrupt-pending` only when you deliberately want to cancel the active turn before sending the next one.
+
+#### Broker workspace isolation
+
+You can run independent brokers at the same time. Each Git repository gets one implicit broker, a shell outside Git uses the home broker, and `--cwd` creates or selects a broker for a specific directory. Commands run from any subdirectory of the same repository use the same repository broker.
+
+```bash
+# From any directory in a repository: <git-root>/.codex-cli/
+hiai --broker start
+
+# From outside a repository: ~/.codex-cli/
+(cd "$HOME" && hiai --broker start)
+
+# An explicitly selected workspace: /path/to/other-workspace/.codex-cli/
+codex-cli --cwd /path/to/other-workspace --broker start
+```
+
+Use the same directory context (or the same `--cwd`) for `status`, `threads`, and `stop`. These brokers are independent: they have separate sockets, selected threads, and one active-turn limit each.
 
 An implicit saved thread is intentionally replaced with a new one if the broker has restarted or if the saved thread is no longer available. An explicit `--thread THREAD_ID` is strict: it reports a missing thread rather than silently switching to another conversation.
 
@@ -360,19 +377,15 @@ Use a positional prompt, `--prompt`, or `--stdin`:
 
 Assistant messages are written to standard output. Select how much of the richer app-server item stream is rendered with `--verbosity`:
 
-- `low` (default) preserves the original behavior and prints assistant messages only.
-- `medium` also prints reasoning summaries, plans, and concise command, file-change, tool, search, and subagent lifecycle entries.
-- `high` adds the details supplied by the app-server, including reasoning content, command output, diffs, and tool arguments/results when available.
+- `low` (default) prints assistant messages only.
+- `medium` also prints concise reasoning summaries and plans.
+- `high` additionally prints operational activity—commands, file changes, tools, searches, and subagent actions—plus the details supplied by the app-server, including reasoning content, command output, diffs, and tool arguments/results when available.
 
 Rich item details, operational messages, approval decisions, and errors are written to standard error, so standard output remains suitable for consuming assistant messages. These levels control terminal rendering; they do not change the model's reasoning effort or `model_verbosity` setting.
 
-The progress spinner is enabled by default on standard error while a terminal
-is waiting for its first visible message or action. `--progress` may still be
-supplied explicitly. The spinner is independent of verbosity, clears before
-streamed output, and is automatically disabled when standard error is
-redirected or `--json` is active.
+`--interim` is enabled by default and displays real assistant updates while a turn runs. At `medium` it also shows concise reasoning and plans; at `high` it includes operational activity such as commands, file changes, and tool calls. It does not invent progress. When `--agentic-error-code` is active, interim contract messages are rendered as their human-readable `summary`, never as their internal JSON object. The validated final summary is still written to standard output. Set `interim: false` through client configuration or `CDXCLI_INTERIM=false` to suppress live activity. The spinner advances only when Codex or the broker sends an event, clears before visible output, resumes after visible output when later activity is hidden, and is automatically disabled when standard error is redirected or `--json` is active.
 
-Outside `--agentic-error-code`, `--json` emits newline-delimited raw app-server events instead of human-formatted output and is the lossless choice for scripts that need every protocol event. In agentic error-code mode it emits only the single validated result object described above.
+`--version` prints the installed version and exits. `--json` always emits newline-delimited raw app-server events instead of human-formatted output and is the lossless choice for scripts that need every protocol event. With `--agentic-error-code`, the validated final result is appended as the final JSON line; the option controls the process exit status, not interim output.
 
 ### Image attachments
 
@@ -554,7 +567,7 @@ supplies a shell function for it.
 
 ## Local files and lifecycle
 
-Broker mode creates workspace-scoped files. On macOS and Linux these are:
+Broker mode creates workspace-scoped files. An implicit broker workspace is the Git root, or the user's home directory outside Git; `--cwd` selects an explicit workspace. On macOS and Linux these files are:
 
 - `.codex-cli/codex-cli-broker.sock`: private Unix socket
 - `.codex-cli/codex-cli-broker.pid`: broker metadata

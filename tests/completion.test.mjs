@@ -157,7 +157,7 @@ test("option-name completion covers every public flag and both Bash-completion s
     "--thread-params", "--turn-params", "--thread", "--new", "--state", "--model",
     "--clear-model", "--start-daemon", "--cwd", "--timeout", "--approval", "--approval-log",
     "--experimental-api", "--interactive", "--repl", "--interrupt-pending", "--verbosity", "--progress", "--debug", "--agentic-error-code", "--json",
-    "--stdin", "--codex", "--bash_completion", "--bash-completion", "--help", "-h",
+    "--stdin", "--codex", "--bash_completion", "--bash-completion", "--help", "-h", "--interim", "--version",
   ];
   const result = completion(["codex-cli", "-"]);
   assert.equal(result.status, 0, result.stderr);

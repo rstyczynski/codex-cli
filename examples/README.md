@@ -28,7 +28,7 @@ example only inspects configuration and does not contact Codex.
 | Timeouts and diagnostics | [`timeouts-and-diagnostics.sh`](timeouts-and-diagnostics.sh) | Reattach after timeout, debug, and interrupt |
 | Model and Codex configuration | [`model-and-config.sh`](model-and-config.sh) | Model selection, config JSON, and raw parameters |
 | Agentic exit codes | [`agentic-exit-codes.sh`](agentic-exit-codes.sh) | Map task outcomes to shell status codes |
-| Input and output | [`input-and-output.sh`](input-and-output.sh) | Positional, flag, stdin, verbosity, and JSONL forms |
+| Input and output | [`input-and-output.sh`](input-and-output.sh) | Positional, flag, stdin, interim verbosity, spinner, and JSONL forms |
 | Direct mode | [`direct-mode.sh`](direct-mode.sh) | Isolated app-server turn and optional REPL |
 | Existing app-server socket | [`existing-socket.sh`](existing-socket.sh) | Connect to a socket owned by another process |
 | Bash completion | [`bash-completion.sh`](bash-completion.sh) | Complete options, models, and registered prompt-action tokens |

@@ -69,6 +69,13 @@ test("CLI rejects invalid options and incompatible modes", async () => {
   assert.match(result.stderr, /not a directory/);
 });
 
+test("CLI version exits successfully without requiring a workspace or Codex", () => {
+  const result = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8", timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "codex-cli 1.0.10\n");
+  assert.equal(result.stderr, "");
+});
+
 test("CLI reports invalid state and configuration files", async () => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli files "));
@@ -167,16 +174,20 @@ test("agentic error-code mode maps validated outcomes and preserves system failu
   let result = invoke(workspace, ["--direct", "--new", "--agentic-error-code", "agentic achieved"]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "goal complete\n");
+  assert.match(result.stderr, /codex-cli: goal complete/);
+  assert.doesNotMatch(result.stderr, /\{"goal_achieved"/);
 
   result = invoke(workspace, ["--direct", "--new", "--agentic-error-code", "--json", "agentic achieved"]);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
+  const agenticEvents = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(agenticEvents.length > 1, "agentic JSON mode should preserve interim protocol events");
+  assert.deepEqual(agenticEvents.at(-1), {
     goal_achieved: true,
     agentic_exit_code: 0,
     summary: "goal complete",
     reason: "requested work and checks completed",
   });
-  assert.equal(result.stdout.trim().split("\n").length, 1, "agentic JSON output must not include raw app-server events");
+  assert.equal(result.stdout.trim().split("\n").length, agenticEvents.length);
 
   result = invoke(workspace, ["--direct", "--new", "--agentic-error-code", "agentic not achieved"]);
   assert.equal(result.status, 1, result.stderr);
@@ -225,23 +236,22 @@ test("agentic error-code mode maps validated outcomes and preserves system failu
   assert.match(result.stderr, /CLI-managed outputSchema/);
 });
 
-test("human verbosity reveals rich app-server items without changing message output", async () => {
+test("interim activity is visible by default and verbosity controls its detail", async () => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli verbosity "));
 
   let result = invoke(workspace, ["--direct", "--new", "rich items low"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /reply 1: rich items low/);
-  assert.doesNotMatch(result.stderr, /Reasoning|Command|File change|MCP tool|Web search/);
+  assert.doesNotMatch(result.stderr, /Reasoning:|Plan:|Command |File change|MCP tool|Web search/);
+  assert.doesNotMatch(result.stderr, /Detailed reasoning trace|all tests passed|"query": "protocol"/);
 
   result = invoke(workspace, ["--direct", "--new", "--verbosity", "medium", "rich items medium"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /reply 1: rich items medium/);
   assert.match(result.stderr, /Reasoning:\n  Inspecting the workspace/);
-  assert.match(result.stderr, /Command started: npm test/);
-  assert.match(result.stderr, /Command completed \(exit 0, 42 ms\): npm test/);
-  assert.match(result.stderr, /File change completed: update: README\.md/);
-  assert.match(result.stderr, /MCP tool completed \(8 ms\): docs\.lookup/);
+  assert.match(result.stderr, /Plan:\n  1\. Inspect/);
+  assert.doesNotMatch(result.stderr, /Command |File change|MCP tool|Web search/);
   assert.doesNotMatch(result.stderr, /Detailed reasoning trace|all tests passed|"query": "protocol"/);
 
   result = invoke(workspace, ["--direct", "--new", "--verbosity", "high", "rich items high"]);

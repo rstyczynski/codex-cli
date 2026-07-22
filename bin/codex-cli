@@ -40,7 +40,7 @@ Options:
   --model MODEL        Use and remember a Codex model for this workspace thread
   --clear-model        Stop overriding the model and use the Codex default
   --start-daemon       Start the managed app-server before connecting
-  --cwd PATH           Workspace to use for this turn (default: current directory)
+  --cwd PATH           Workspace to use for this turn (broker default: Git root, or home outside Git)
   --timeout SECONDS    Maximum time to wait for turn completion (default: 120)
   --approval MODE      Approval policy: decline (default), accept, or accept-for-session
   --approval-log PATH  Append approval requests and decisions to a TOML audit log
@@ -50,10 +50,11 @@ Options:
   --repl                Keep a direct thread open for additional terminal turns
   --interrupt-pending   Interrupt active turns in the selected thread before starting
   --verbosity LEVEL     Human output: low (default), medium, or high
-  --progress            Show a spinner while waiting for visible output on a terminal (default: enabled)
+  --progress            Show an event-driven spinner while waiting for visible output on a terminal (default: enabled)
+  --interim             Show interim Codex activity while a turn runs (default: enabled)
   --debug               Log app-server requests, events, and turn status to standard error
   --agentic-error-code  Map Codex's validated final result to process exit status 0-15
-  --json               Emit raw JSON events, or one validated agentic result
+  --json               Emit raw JSON events and, when requested, the validated agentic result
   --stdin              Read the prompt from standard input
   --codex PATH         Codex executable to use when starting the daemon (default: codex)
   -h, --help           Show this help
@@ -74,6 +75,7 @@ Examples:
 const AGENTIC_SYSTEM_ERROR_EXIT_CODE = 70;
 const AGENTIC_CONTRACT_ERROR_EXIT_CODE = 72;
 const AGENTIC_RESERVED_EXIT_CODES = new Set([13]);
+const CLI_VERSION = "1.0.10";
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_HELPER_OUTPUT_BYTES = 20 * 1024 * 1024;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -110,6 +112,7 @@ const BROKER_ACTIONS = ["start", "status", "stop", "threads"];
 const SHOW_CONFIG_MODES = ["set", "all"];
 const OPTION_DEFINITIONS = [
   { flags: ["--help", "-h"], key: "help", kind: "boolean", environment: "HELP" },
+  { flags: ["--version"], key: "version", kind: "boolean", environment: "VERSION" },
   { flags: ["--socket"], key: "socket", kind: "value" }, { flags: ["--direct"], key: "direct", kind: "boolean" },
   { flags: ["--broker"], key: "broker", kind: "broker" }, { flags: ["--broker-serve"], key: "brokerServe", kind: "boolean", impliesBroker: true },
   { flags: ["--broker-socket"], key: "brokerSocket", kind: "value" }, { flags: ["--prompt"], key: "prompt", kind: "append" }, { flags: ["--image"], key: "images", kind: "append" },
@@ -124,7 +127,7 @@ const OPTION_DEFINITIONS = [
   { flags: ["--bash_completion", "--bash-completion"], key: "bashCompletion", kind: "boolean", environment: "BASH_COMPLETION" },
   { flags: ["--interactive"], key: "interactive", kind: "boolean" }, { flags: ["--repl"], key: "repl", kind: "boolean" },
   { flags: ["--interrupt-pending"], key: "interruptPending", kind: "boolean" }, { flags: ["--verbosity"], key: "verbosity", kind: "verbosity" },
-  { flags: ["--progress"], key: "progress", kind: "boolean" }, { flags: ["--debug"], key: "debug", kind: "boolean" },
+  { flags: ["--progress"], key: "progress", kind: "boolean" }, { flags: ["--interim"], key: "interim", kind: "boolean" }, { flags: ["--debug"], key: "debug", kind: "boolean" },
   { flags: ["--agentic-error-code"], key: "agenticErrorCode", kind: "boolean" },
   { flags: ["--json"], key: "json", kind: "boolean" }, { flags: ["--stdin"], key: "stdin", kind: "boolean" },
   { flags: ["--codex"], key: "codex", kind: "value" }, { flags: ["--completion-models"], key: "completionModels", kind: "boolean" },
@@ -155,6 +158,7 @@ const CONFIGURATION_FIELDS = [
   { key: "interruptPending", definition: optionDefinition("--interrupt-pending"), risk: "safe" },
   { key: "verbosity", definition: optionDefinition("--verbosity"), risk: "safe" },
   { key: "progress", definition: optionDefinition("--progress"), risk: "safe" },
+  { key: "interim", definition: optionDefinition("--interim"), risk: "safe" },
   { key: "debug", definition: optionDefinition("--debug"), risk: "safe" },
   { key: "agenticErrorCode", definition: optionDefinition("--agentic-error-code"), risk: "safe" },
   { key: "json", definition: optionDefinition("--json"), risk: "safe" },
@@ -289,7 +293,7 @@ function applyEnvironmentOverrides(options, environment = process.env) {
 }
 
 function createDefaultOptions(invocationCwd) {
-  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, progress: true, debug: false, agenticErrorCode: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
+  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, progress: true, interim: true, debug: false, agenticErrorCode: false, version: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
   for (const field of CONFIGURATION_FIELDS) {
     if (field.definition) options.optionSources[field.definition.key] = defaultSource();
   }
@@ -459,6 +463,10 @@ function findGitRoot(cwd) {
       child.once("close", (code) => finish(code === 0 && output.trim() ? path.resolve(output.trim()) : undefined));
     } catch { finish(undefined); }
   });
+}
+
+async function resolveImplicitBrokerWorkspace(invocationCwd, homeDirectory = homedir()) {
+  return await findGitRoot(invocationCwd) ?? path.resolve(homeDirectory);
 }
 
 async function loadLayeredConfiguration(options, invocationCwd, configPaths, environment = process.env) {
@@ -1281,7 +1289,7 @@ function bashCompletionScript(options) {
     "    _codex_cli_words 'start status stop threads' \"$cur\"; return",
     "  fi",
     "  if [[ $cur == -* ]]; then",
-    "    _codex_cli_words '--socket --direct --broker --broker-socket --prompt --image --config --show-config --config-json --thread-params --turn-params --thread --new --state --model --clear-model --start-daemon --cwd --timeout --approval --approval-log --experimental-api --interactive --repl --interrupt-pending --verbosity --progress --debug --agentic-error-code --json --stdin --codex --bash_completion --bash-completion --help -h' \"$cur\"",
+    "    _codex_cli_words '--socket --direct --broker --broker-socket --prompt --image --config --show-config --config-json --thread-params --turn-params --thread --new --state --model --clear-model --start-daemon --cwd --timeout --approval --approval-log --experimental-api --interactive --repl --interrupt-pending --verbosity --progress --interim --debug --agentic-error-code --json --stdin --codex --bash_completion --bash-completion --help -h --version' \"$cur\"",
     "  fi",
     "}",
     "",
@@ -1412,12 +1420,14 @@ function formatThreadItem(item, verbosity = "low", phase = "completed") {
     case "plan":
       return phase === "started" ? undefined : `📋 Plan:\n${indented(item.text ?? "")}`;
     case "commandExecution": {
+      if (verbosity !== "high") return undefined;
       let result = `⚙️ Command ${state}${timing(item)}: ${item.command}`;
       if (verbosity === "high" && item.cwd) result += `\n  cwd: ${item.cwd}`;
       if (verbosity === "high" && item.aggregatedOutput) result += `\n  output:\n${indented(item.aggregatedOutput.replace(/\n$/, ""))}`;
       return result;
     }
     case "fileChange": {
+      if (verbosity !== "high") return undefined;
       const changes = (item.changes ?? []).map((change) => `${change.kind}: ${change.path}`);
       let result = `📝 File change ${state}${changes.length ? `: ${changes.join(", ")}` : ""}`;
       if (verbosity === "high") {
@@ -1426,6 +1436,7 @@ function formatThreadItem(item, verbosity = "low", phase = "completed") {
       return result;
     }
     case "mcpToolCall": {
+      if (verbosity !== "high") return undefined;
       let result = `🔌 MCP tool ${state}${timing(item)}: ${item.server}.${item.tool}`;
       if (verbosity === "high") {
         result += `\n  arguments:\n${indented(printable(item.arguments))}`;
@@ -1435,6 +1446,7 @@ function formatThreadItem(item, verbosity = "low", phase = "completed") {
       return result;
     }
     case "dynamicToolCall": {
+      if (verbosity !== "high") return undefined;
       const name = [item.namespace, item.tool].filter(Boolean).join(".");
       let result = `🛠️ Tool ${state}${timing(item)}: ${name}`;
       if (verbosity === "high") {
@@ -1444,6 +1456,7 @@ function formatThreadItem(item, verbosity = "low", phase = "completed") {
       return result;
     }
     case "collabAgentToolCall": {
+      if (verbosity !== "high") return undefined;
       const receivers = item.receiverThreadIds?.length ? ` -> ${item.receiverThreadIds.join(", ")}` : "";
       let result = `🤝 Agent action ${state}: ${item.tool}${receivers}`;
       if (verbosity === "high" && item.prompt) result += `\n  prompt:\n${indented(item.prompt)}`;
@@ -1451,22 +1464,23 @@ function formatThreadItem(item, verbosity = "low", phase = "completed") {
       return result;
     }
     case "subAgentActivity":
-      return `🧵 Subagent ${item.kind}: ${item.agentPath} (${item.agentThreadId})`;
+      return verbosity === "high" ? `🧵 Subagent ${item.kind}: ${item.agentPath} (${item.agentThreadId})` : undefined;
     case "webSearch":
-      return `🌐 Web search ${state}: ${item.query}`;
+      return verbosity === "high" ? `🌐 Web search ${state}: ${item.query}` : undefined;
     case "imageView":
-      return `🖼️ Viewed image: ${item.path}`;
+      return verbosity === "high" ? `🖼️ Viewed image: ${item.path}` : undefined;
     case "imageGeneration": {
+      if (verbosity !== "high") return undefined;
       let result = `🎨 Image generation ${item.status}${item.savedPath ? `: ${item.savedPath}` : ""}`;
       if (verbosity === "high" && item.result) result += `\n${indented(item.result)}`;
       return result;
     }
     case "enteredReviewMode":
-      return `🔍 Entered review mode${item.review ? `: ${item.review}` : ""}`;
+      return verbosity === "high" ? `🔍 Entered review mode${item.review ? `: ${item.review}` : ""}` : undefined;
     case "exitedReviewMode":
-      return `✅ Exited review mode${item.review ? `: ${item.review}` : ""}`;
+      return verbosity === "high" ? `✅ Exited review mode${item.review ? `: ${item.review}` : ""}` : undefined;
     case "contextCompaction":
-      return "🗜️ Compacted conversation context";
+      return verbosity === "high" ? "🗜️ Compacted conversation context" : undefined;
     case "sleep":
       return verbosity === "high" ? `⏳ Waited ${item.durationMs} ms` : undefined;
     default:
@@ -1480,7 +1494,6 @@ class ProgressSpinner {
     this.output = output;
     this.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     this.frame = 0;
-    this.timer = undefined;
     this.visible = false;
     this.label = "Codex is working";
   }
@@ -1492,42 +1505,75 @@ class ProgressSpinner {
   }
 
   start(label = "Codex is working") {
-    if (!this.enabled || this.timer) return;
+    if (!this.enabled || this.visible) return;
     this.label = label;
     this.render();
-    this.timer = setInterval(() => this.render(), 80);
-    this.timer.unref?.();
+  }
+
+  advance() {
+    if (!this.enabled) return;
+    if (this.visible) this.render();
+    else this.start();
   }
 
   stop() {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = undefined;
     if (this.visible) this.output.write("\r\x1b[2K");
     this.visible = false;
   }
 }
 
+function showWelcomeBanner(options, output = stderr, force = false) {
+  if (!force && (!output.isTTY || options.json || options.agenticErrorCode)) return;
+  output.write(`codex-cli v${CLI_VERSION} — ready\n`);
+}
+
+function interimAgentSummary(text) {
+  try {
+    const value = JSON.parse(text);
+    return isJsonObject(value) && typeof value.summary === "string" && value.summary.trim() ? value.summary.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function createHumanRenderer(options, progress, output = stdout, diagnostics = stderr) {
   const streamedAgentItems = new Set();
+  const renderedAgenticSummaries = new Set();
   const streamBuffers = new Map();
   const renderedItems = new Set();
   const renderedTexts = new Set();
   const startedItems = new Set();
   let lastDiagnosticType;
   const visible = () => progress?.stop();
+  const renderAgenticSummary = (itemId, text) => {
+    const summary = interimAgentSummary(text);
+    if (!summary || renderedAgenticSummaries.has(itemId)) return false;
+    visible();
+    renderedAgenticSummaries.add(itemId);
+    diagnostics.write(`codex-cli: ${summary}\n`);
+    return true;
+  };
   return {
     agentDelta(itemId, delta = "") {
-      if (options.json || options.agenticErrorCode) return;
+      if (options.json || !options.interim) return;
       visible();
       streamedAgentItems.add(itemId);
       streamBuffers.set(itemId, `${streamBuffers.get(itemId) ?? ""}${delta}`);
+      if (options.agenticErrorCode) {
+        renderAgenticSummary(itemId, streamBuffers.get(itemId));
+        return;
+      }
       output.write(delta);
     },
     item(item, phase = "completed") {
       if (options.json) return;
       if (!item) return;
       if (item.type === "agentMessage") {
-        if (options.agenticErrorCode) return;
+        if (!options.interim && phase !== "completed") return;
+        if (options.agenticErrorCode) {
+          if (phase !== "started" && options.interim) renderAgenticSummary(item.id, item.text);
+          return;
+        }
         if (phase === "started" || renderedItems.has(item.id) || streamedAgentItems.has(item.id) || renderedTexts.has(item.text) || [...streamBuffers.values()].includes(item.text)) return;
         visible();
         renderedItems.add(item.id);
@@ -1582,7 +1628,7 @@ async function approvalResult(options, request) {
       prompt.close();
     }
   } else {
-    if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify(request)}\n`);
+    if (options.json) stdout.write(`${JSON.stringify(request)}\n`);
     else {
       const command = request.params.command ?? "command";
       stderr.write(`codex-cli: approval requested for ${command}; ${options.approval}\n`);
@@ -1621,7 +1667,7 @@ function serverRequestResult(options, request) {
   if (isApprovalRequest(request)) return approvalResult(options, request);
   if (request.method === "item/tool/requestUserInput") return userInputResult(options, request);
   debug(options, `declining unsupported app-server request: ${request.method}`);
-  if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify(request)}\n`);
+  if (options.json) stdout.write(`${JSON.stringify(request)}\n`);
   else stderr.write(`codex-cli: unsupported app-server request ${request.method}; decline\n`);
   return { decision: "decline" };
 }
@@ -1859,6 +1905,7 @@ function validateBrokerRun(request, workspace) {
   if (request.resumeActiveTurn !== undefined && typeof request.resumeActiveTurn !== "boolean") throw new Error("broker resumeActiveTurn must be a boolean");
   if (request.interruptPending !== undefined && typeof request.interruptPending !== "boolean") throw new Error("broker interruptPending must be a boolean");
   if (request.interactive !== undefined && typeof request.interactive !== "boolean") throw new Error("broker interactive must be a boolean");
+  if (request.interim !== undefined && typeof request.interim !== "boolean") throw new Error("broker interim must be a boolean");
   if (request.json !== undefined && typeof request.json !== "boolean") throw new Error("broker json must be a boolean");
   if (request.debug !== undefined && typeof request.debug !== "boolean") throw new Error("broker debug must be a boolean");
   if (request.agenticErrorCode !== undefined && typeof request.agenticErrorCode !== "boolean") throw new Error("broker agenticErrorCode must be a boolean");
@@ -2066,12 +2113,12 @@ async function serveBroker(options) {
     }
     if (active.request.debug && !active.request.json && event.method.startsWith("turn/")) active.peer.send({ type: "debug", message: `received ${event.method}: ${JSON.stringify(event.params ?? {})}` });
     if (active.request.json) active.peer.send({ type: "event", event });
-    else if (event.method === "item/agentMessage/delta") {
+    else if (event.method === "item/agentMessage/delta" && active.request.interim !== false) {
       active.streamedItems.add(event.params.itemId);
       active.streamBuffers.set(event.params.itemId, `${active.streamBuffers.get(event.params.itemId) ?? ""}${event.params.delta ?? ""}`);
       active.peer.send({ type: "delta", itemId: event.params.itemId, delta: event.params.delta });
     } else if (event.method === "item/started") {
-      if ((active.request.verbosity ?? "low") !== "low") active.peer.send({ type: "item", phase: "started", item: event.params.item });
+      if (active.request.interim !== false) active.peer.send({ type: "item", phase: "started", item: event.params.item });
     } else if (event.method === "item/completed") {
       const item = event.params.item;
       const alreadyStreamed = item?.text && [...active.streamBuffers.values()].includes(item.text);
@@ -2079,7 +2126,7 @@ async function serveBroker(options) {
         active.renderedItems.add(item.id);
         active.renderedTexts.add(item.text);
         active.peer.send({ type: "delta", itemId: item.id, delta: item.text });
-      } else if (item?.type !== "agentMessage" && !active.renderedItems.has(item?.id)) {
+      } else if (active.request.interim !== false && item?.type !== "agentMessage" && !active.renderedItems.has(item?.id)) {
         active.renderedItems.add(item.id);
         active.peer.send({ type: "item", phase: "completed", item });
       }
@@ -2289,7 +2336,7 @@ async function serveBroker(options) {
           throw error;
         }
         if (turn?.status === "completed") {
-          for (const item of request.json ? [] : (turn.items ?? [])) {
+          for (const item of request.json || request.interim === false ? [] : (turn.items ?? [])) {
             const alreadyStreamed = item.text && [...run.streamBuffers.values()].includes(item.text);
             if (item.type === "agentMessage" && !alreadyStreamed && !run.streamedItems.has(item.id) && !run.renderedItems.has(item.id) && !run.renderedTexts.has(item.text)) {
               run.renderedItems.add(item.id);
@@ -2452,6 +2499,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
         debug: options.debug,
         agenticErrorCode: options.agenticErrorCode,
         verbosity: options.verbosity,
+        interim: options.interim,
         configWarnings: options.configWarnings,
         threadParamsSpecified: options.threadParamsSpecified,
         threadId: options.thread,
@@ -2466,17 +2514,18 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
         approvalLog: options.approvalLog,
         interactive: options.interactive,
         interruptPending: options.interruptPending,
-        json: options.json && !options.agenticErrorCode,
+        json: options.json,
         timeout: options.timeout,
       });
       progress.start();
     });
     new JsonLinePeer(socket, async (message) => {
+      progress.advance();
       if (message.type === "thread") {
         options.thread = message.threadId;
         try { await saveThread(options.state, message.threadId, options.clearModel ? undefined : options.model, { transport: "broker", brokerInstanceId: message.instanceId, lastPrompt: prompt }); }
         catch (error) { finish(error); return; }
-        if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify({ method: "thread/selected", params: { threadId: message.threadId, brokerInstanceId: message.instanceId } })}\n`);
+        if (options.json) stdout.write(`${JSON.stringify({ method: "thread/selected", params: { threadId: message.threadId, brokerInstanceId: message.instanceId } })}\n`);
         else if (message.created || options.new) {
           progress.stop();
           stderr.write(`codex-cli: started thread ${message.threadId}\n`);
@@ -2489,7 +2538,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
       else if (message.type === "event") stdout.write(`${JSON.stringify(message.event)}\n`);
       else if (message.type === "approval-handled") {
         progress.stop();
-        if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify({ method: "item/commandExecution/requestApproval", params: { command: message.command, reason: message.reason, decision: message.decision } })}\n`);
+        if (options.json) stdout.write(`${JSON.stringify({ method: "item/commandExecution/requestApproval", params: { command: message.command, reason: message.reason, decision: message.decision } })}\n`);
         else stderr.write(`codex-cli: approval requested for ${message.command ?? "command"}; ${message.decision}\n`);
       }
       else if (message.type === "approval") {
@@ -2547,7 +2596,12 @@ async function main() {
   } catch (error) { fail(error.message); return; }
   agenticErrorCodeActive = options.agenticErrorCode;
   try { validateImageInvocation(options); } catch (error) { fail(error.message); return; }
+  if (options.version) { stdout.write(`codex-cli ${CLI_VERSION}\n`); return; }
   if (options.help) { stdout.write(usage); return; }
+  if (options.broker && options.optionSources.cwd?.kind === "default") {
+    options.cwd = await resolveImplicitBrokerWorkspace(invocationCwd);
+    options.optionSources.cwd = { kind: "implicit-broker", path: options.cwd };
+  }
   options.cwd = path.resolve(options.cwd);
   options.state = path.resolve(options.cwd, options.state);
   if (options.approvalLog) options.approvalLog = path.resolve(options.cwd, options.approvalLog);
@@ -2564,7 +2618,7 @@ async function main() {
   if (options.bashCompletion) { stdout.write(bashCompletionScript(options)); return; }
   if (options.completionModels || options.completionCachedModels) { await printCompletionModels(options); return; }
   if (options.brokerServe) { await serveBroker(options); return; }
-  if (options.brokerAction === "start") { await startBroker(options); return; }
+  if (options.brokerAction === "start") { showWelcomeBanner(options, stderr, true); await startBroker(options); return; }
   if (options.brokerAction === "status") { await statusBroker(options); return; }
   if (options.brokerAction === "stop") { await stopBroker(options); return; }
   if (options.brokerAction === "threads") { await listBrokerThreads(options); return; }
@@ -2613,6 +2667,7 @@ async function main() {
     for (const image of options.images) debug(options, `attached image ${imageDescription(image)}`);
   } catch (error) { fail(error.message); return; }
 
+  showWelcomeBanner(options);
   if (options.broker) { await runBrokerClient(options, prompt, promptParts, savedState); return; }
 
   let currentPrompt = prompt;
@@ -2639,6 +2694,7 @@ async function main() {
   const renderer = createHumanRenderer(options, progress);
   const socketPath = options.socket ?? path.join(defaultCodexHome(), "app-server-control", "app-server-control.sock");
   const onEvent = (event) => {
+    progress.advance();
     debug(options, `received event ${event.method}`);
     const eventError = event.params?.turn?.error ?? event.params?.error;
     if (eventError !== undefined && eventError !== null) lastTurnError = eventError;
@@ -2652,12 +2708,12 @@ async function main() {
       progress.stop();
       stderr.write(`codex-cli: ${codexErrorHeading(notification)}: ${notification.message}\n`);
     }
-    if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify(event)}\n`);
-    else if (event.method === "item/agentMessage/delta") {
+    if (options.json) stdout.write(`${JSON.stringify(event)}\n`);
+    else if (options.interim && event.method === "item/agentMessage/delta") {
       renderer.agentDelta(event.params.itemId, event.params.delta);
-    } else if (event.method === "item/started") {
+    } else if (options.interim && event.method === "item/started") {
       renderer.item(event.params.item, "started");
-    } else if (event.method === "item/completed") {
+    } else if (options.interim && event.method === "item/completed") {
       renderer.item(event.params.item, "completed");
     }
     if (event.method === "turn/completed" && event.params.threadId === targetThreadId && event.params.turn?.id === targetTurnId) {
@@ -2693,7 +2749,7 @@ async function main() {
       if (hasModelOverride(options)) threadStartParams.model = options.clearModel ? null : options.model;
       const response = await client.request("thread/start", threadStartParams);
       threadId = response.thread.id;
-      if (options.json && !options.agenticErrorCode) stdout.write(`${JSON.stringify({ method: "thread/selected", params: { threadId } })}\n`);
+      if (options.json) stdout.write(`${JSON.stringify({ method: "thread/selected", params: { threadId } })}\n`);
       else stderr.write(`codex-cli: started thread ${threadId}\n`);
     }
     if (!options.direct) await saveThread(options.state, threadId, options.clearModel ? undefined : options.model);
@@ -2818,4 +2874,4 @@ if (process.argv[1] && entryPath(fileURLToPath(import.meta.url)) === entryPath(p
   main().catch((error) => fail(error.message, error.exitCode));
 }
 
-export { JsonRpcClient, ProgressSpinner, StdioJsonRpcClient, approvalResult, classifyCodexError, createHumanRenderer, debug, finalAgentMessage, formatThreadItem, logApproval, parseAgenticResult, parseArgs, promptWithAgenticResultContract, serverRequestResult, userInputResult };
+export { JsonRpcClient, ProgressSpinner, StdioJsonRpcClient, approvalResult, classifyCodexError, createHumanRenderer, debug, finalAgentMessage, formatThreadItem, logApproval, parseAgenticResult, parseArgs, promptWithAgenticResultContract, resolveImplicitBrokerWorkspace, serverRequestResult, showWelcomeBanner, userInputResult };

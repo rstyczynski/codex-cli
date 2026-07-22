@@ -351,7 +351,9 @@ test("socket mode applies the agentic result contract", async (t) => {
 
   result = await invokeCli(workspace, ["--socket", socketPath, "--new", "--agentic-error-code", "--json", "agentic not achieved"]);
   assert.equal(result.status, 1, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
+  const agenticEvents = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(agenticEvents.length > 1, "agentic JSON mode should preserve interim protocol events");
+  assert.deepEqual(agenticEvents.at(-1), {
     goal_achieved: false,
     agentic_exit_code: 1,
     summary: "socket goal incomplete",

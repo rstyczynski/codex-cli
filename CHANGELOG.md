@@ -1,0 +1,58 @@
+# Changelog
+
+## 1.0.10
+
+- Reduced default interim noise: `low` now shows assistant updates only, `medium` adds concise reasoning and plans, and raw operational activity is reserved for `high` verbosity.
+- Resume the event-driven progress spinner after visible interim output when subsequent activity is hidden.
+
+## 1.0.9
+
+- Resolve an implicit broker workspace to the Git root, or to the user's home directory when invoked outside a Git worktree. An explicit `--cwd` is preserved.
+
+## 1.0.8
+
+- Render live agentic contract messages as their user-facing summaries instead of exposing raw JSON on a normal terminal.
+
+## 1.0.7
+
+- Added `--version` for `codex-cli`, `cdx`, and `hiai`.
+- Added default-on `--interim` activity output driven by real Codex and broker events.
+- Decoupled `--agentic-error-code` from interim output and JSON event streaming.
+
+## 1.0.6
+
+- Added a terminal-only welcome banner that shows the installed `codex-cli` version.
+- Made the progress spinner advance only when Codex or the broker sends an event.
+
+## 1.0.5
+
+- Added support for all app-server approval request methods, including file-change approvals.
+
+## 1.0.4
+
+- Documented the remaining need for transport-wide interactive approval coverage.
+
+## 1.0.3
+
+- Made `--interactive` fail before a turn starts when no terminal is available, instead of silently declining approval and user-input requests.
+
+## 1.0.2
+
+- Allowed a completed agentic run to use explicit exit code `1` when the prompt assigns that code to an observed result.
+
+## 1.0.1
+
+- Made `hiai` enable `--agentic-error-code` by default so its process status reflects the validated agentic result.
+
+## 1.0.0
+
+- Introduced `codex-cli`, a local Codex app-server client for shell automation.
+- Added persistent workspace brokers with start, status, stop, and thread-list commands; saved-thread selection; one-turn-at-a-time coordination; and automatic recovery when an implicitly saved broker thread becomes stale.
+- Added direct standard-I/O and existing app-server socket transports alongside broker mode, including Windows named-pipe support where applicable.
+- Added the `codex-cli`, `cdx`, and `hiai` launchers, Bash completion, and model completion backed by Codex's local catalog cache.
+- Added positional, `--prompt`, and standard-input prompts; reusable thread state; `--new`, explicit `--thread`, model selection, and interrupt handling.
+- Added structured client configuration: layered home, Git-root, and directory JSON files; `CDXCLI_*` environment overrides; explicit config overlays; and raw thread/turn parameter objects.
+- Added safe local image attachments and clipboard prompt actions, with input validation, owner-restricted temporary files, and cleanup.
+- Added approval automation, audit logs, and terminal handling of Codex approval and structured user-input requests.
+- Added human verbosity levels, progress display, JSONL protocol output, timeout/error diagnostics, and validated agentic result contracts that map prompt outcomes to shell exit statuses.
+- Added runnable examples, security-focused validation, and the initial README/quick-start documentation.

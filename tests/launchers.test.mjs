@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const root = path.resolve(new URL("..", import.meta.url).pathname);
+const cdx = path.join(root, "bin/cdx");
 const hiai = path.join(root, "bin/hiai");
 const fakeCodex = path.join(root, "tests/fixtures/fake-codex.mjs");
 
@@ -58,6 +59,15 @@ test("hiai launcher selects broker agentic mode and preserves arguments", async 
 test("package installs hiai through its broker launcher", async () => {
   const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   assert.equal(packageJson.bin.hiai, "bin/hiai");
+});
+
+test("cdx and hiai expose the shared version without starting Codex", () => {
+  for (const command of [cdx, hiai]) {
+    const result = spawnSync(command, ["--version"], { encoding: "utf8", timeout: 10000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "codex-cli 1.0.10\n");
+    assert.equal(result.stderr, "");
+  }
 });
 
 test("hiai enables agentic exits and accepts broker approval requests end to end", async (t) => {

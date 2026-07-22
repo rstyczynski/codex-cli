@@ -16,6 +16,10 @@
   - [CDX-13 cpb-paste Clipboard Utility](#cdx-13-cpb-paste-clipboard-utility)
   - [CDX-14 Prompt Attachment Actions](#cdx-14-prompt-attachment-actions)
   - [CDX-15 hiai Broker Launcher Regression](#cdx-15-hiai-broker-launcher-regression)
+  - [CDX-17 Welcome Banner and Version](#cdx-17-welcome-banner-and-version)
+  - [CDX-18 Version Option](#cdx-18-version-option)
+  - [CDX-19 Interim Activity Display](#cdx-19-interim-activity-display)
+  - [CDX-20 Interim Reporting Polish](#cdx-20-interim-reporting-polish)
 - [Open](#open)
   - [CDX-6 Upstream Turn-Level Sandbox Enforcement](#cdx-6-upstream-turn-level-sandbox-enforcement)
   - [CDX-7 Install and Release Polish](#cdx-7-install-and-release-polish)
@@ -191,6 +195,24 @@ Delivered:
 
 Design: `model/CDX-14-prompt-attachment-actions.md`.
 
+### CDX-17 Welcome Banner and Version
+
+Status: implemented in v1.0.6.
+
+Show a concise welcome banner when `codex-cli` starts, including the installed version. The banner must make the active client version visible without interfering with machine-readable output or scripts.
+
+### CDX-18 Version Option
+
+Status: implemented in v1.0.7.
+
+Add a `--version` option for `codex-cli`, `cdx`, and `hiai`. It must print only the installed version to standard output and exit successfully, without a welcome banner or other operational output.
+
+### CDX-19 Interim Activity Display
+
+Status: implemented in v1.0.7.
+
+Present real interim Codex work events next to the progress indicator while a turn is running, such as plans, commands, file changes, tool calls, approvals, and errors. Control this with `--interim`, enabled by default; it must not invent progress or interfere with JSON and agentic-script output.
+
 ## Open
 
 ### CDX-6 Upstream Turn-Level Sandbox Enforcement
@@ -249,6 +271,20 @@ Remaining work:
 - Verify that interactive handling answers Codex protocol requests only and
   never forwards terminal input to child commands.
 - Document any platform-specific PTY limitations or test skips explicitly.
+
+### CDX-20 Interim Reporting Polish
+
+Status: implemented in v1.0.10.
+
+Refine live progress reporting so it keeps the user oriented without flooding the terminal with raw operational events. The current low-verbosity `--interim` experience can show every command start and completion alongside useful assistant updates.
+
+Delivered behavior:
+
+- Keep the spinner active whenever interim messages are hidden, so a quiet turn still visibly makes progress.
+- Make `--interim` opt into concise, user-facing status updates rather than raw command telemetry at low and medium verbosity.
+- Use `--verbosity high` to additionally show detailed operational activity, including command start/completion and other rich item details.
+- Preserve the existing guarantees for `--json`, `--agentic-error-code`, redirected stderr, and no invented progress.
+- Define and test the full `--interim` × verbosity visibility matrix, including spinner clearing and resuming around visible output.
 
 ### CDX-15 hiai Broker Launcher Regression
 

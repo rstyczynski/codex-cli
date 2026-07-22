@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { ProgressSpinner, classifyCodexError, createHumanRenderer, finalAgentMessage, formatThreadItem, parseAgenticResult, parseArgs, promptWithAgenticResultContract } from "../bin/codex-cli";
+import { ProgressSpinner, classifyCodexError, createHumanRenderer, finalAgentMessage, formatThreadItem, parseAgenticResult, parseArgs, promptWithAgenticResultContract, resolveImplicitBrokerWorkspace, showWelcomeBanner } from "../bin/codex-cli";
+
+const root = path.resolve(new URL("..", import.meta.url).pathname);
 
 test("verbosity defaults to low and accepts every documented level", () => {
   assert.equal(parseArgs([]).verbosity, "low");
@@ -13,7 +18,17 @@ test("verbosity defaults to low and accepts every documented level", () => {
 
 test("progress defaults to enabled", () => {
   assert.equal(parseArgs([]).progress, true);
+  assert.equal(parseArgs([]).interim, true);
   assert.equal(parseArgs(["--agentic-error-code"]).agenticErrorCode, true);
+});
+
+test("implicit broker workspaces use the Git root or the user home", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "codex cli broker home "));
+  const outsideGit = await mkdtemp(path.join(os.tmpdir(), "codex cli no git "));
+  t.after(async () => Promise.all([rm(home, { recursive: true, force: true }), rm(outsideGit, { recursive: true, force: true })]));
+
+  assert.equal(await resolveImplicitBrokerWorkspace(path.join(root, "tests"), home), root);
+  assert.equal(await resolveImplicitBrokerWorkspace(outsideGit, home), home);
 });
 
 test("agentic result contract is injected and strictly validated", () => {
@@ -109,7 +124,7 @@ test("thread-item formatting separates summaries from high-detail payloads", () 
     aggregatedOutput: "passed\n",
   };
   assert.equal(formatThreadItem(command, "low"), undefined);
-  assert.equal(formatThreadItem(command, "medium"), "⚙️ Command completed (exit 0, 12 ms): npm test");
+  assert.equal(formatThreadItem(command, "medium"), undefined);
   assert.match(formatThreadItem(command, "high"), /cwd: \/workspace/);
   assert.match(formatThreadItem(command, "high"), /output:\n  passed/);
 
@@ -121,7 +136,7 @@ test("thread-item formatting separates summaries from high-detail payloads", () 
 test("rich rendering marks item types and separates type changes", () => {
   const diagnostics = [];
   const renderer = createHumanRenderer(
-    { json: false, verbosity: "medium" },
+    { json: false, verbosity: "high" },
     undefined,
     { write() {} },
     { write: (chunk) => diagnostics.push(chunk) },
@@ -139,12 +154,39 @@ test("rich rendering marks item types and separates type changes", () => {
   );
 });
 
-test("progress spinner paints immediately and clears cleanly", () => {
+test("agentic interim updates render only a user-facing summary", () => {
+  const diagnostics = [];
+  const renderer = createHumanRenderer(
+    { json: false, interim: true, agenticErrorCode: true, verbosity: "low" },
+    undefined,
+    { write() {} },
+    { write: (chunk) => diagnostics.push(chunk) },
+  );
+  const update = JSON.stringify({
+    goal_achieved: false,
+    agentic_exit_code: 1,
+    summary: "Progress checkpoint 1 of 6 completed.",
+    reason: "The timed demonstration is still running.",
+  });
+
+  renderer.agentDelta("update-1", update.slice(0, 42));
+  renderer.agentDelta("update-1", update.slice(42));
+  renderer.item({ id: "update-1", type: "agentMessage", text: update }, "completed");
+
+  assert.deepEqual(diagnostics, ["codex-cli: Progress checkpoint 1 of 6 completed.\n"]);
+  assert.doesNotMatch(diagnostics.join(""), /goal_achieved|agentic_exit_code|reason/);
+});
+
+test("progress spinner advances only when an event advances it and clears cleanly", () => {
   const writes = [];
   const spinner = new ProgressSpinner(true, { write: (chunk) => writes.push(chunk) });
   spinner.start("Waiting for Codex");
+  spinner.advance();
+  spinner.stop();
+  spinner.advance();
   spinner.stop();
   assert.match(writes[0], /Waiting for Codex/);
+  assert.equal(writes.length, 5);
   assert.equal(writes.at(-1), "\r\x1b[2K");
 
   const disabledWrites = [];
@@ -152,4 +194,20 @@ test("progress spinner paints immediately and clears cleanly", () => {
   disabled.start();
   disabled.stop();
   assert.deepEqual(disabledWrites, []);
+});
+
+test("welcome banner writes only to an interactive terminal and excludes machine-readable modes", () => {
+  const writes = [];
+  showWelcomeBanner({ json: false, agenticErrorCode: false }, { isTTY: true, write: (chunk) => writes.push(chunk) });
+  assert.deepEqual(writes, ["codex-cli v1.0.10 — ready\n"]);
+
+  for (const options of [{ json: true, agenticErrorCode: false }, { json: false, agenticErrorCode: true }]) {
+    const suppressed = [];
+    showWelcomeBanner(options, { isTTY: true, write: (chunk) => suppressed.push(chunk) });
+    assert.deepEqual(suppressed, []);
+  }
+
+  const brokerStart = [];
+  showWelcomeBanner({ json: true, agenticErrorCode: true }, { isTTY: false, write: (chunk) => brokerStart.push(chunk) }, true);
+  assert.deepEqual(brokerStart, ["codex-cli v1.0.10 — ready\n"]);
 });

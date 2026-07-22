@@ -134,6 +134,7 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
 
   let result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /codex-cli v1\.0\.10 — ready/);
   assert.match(result.stderr, /broker started/);
   assert.equal((await stat(path.join(workspace, "broker.sock"))).mode & 0o777, 0o600);
 
@@ -548,13 +549,17 @@ test("broker carries agentic outcomes without masking broker or app-server failu
   result = invoke(workspace, "--broker", "--new", "--agentic-error-code", "--prompt", "agentic achieved");
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "goal complete\n");
+  assert.match(result.stderr, /codex-cli: goal complete/);
+  assert.doesNotMatch(result.stderr, /\{"goal_achieved"/);
   const agenticTurn = (await readTrace(workspace)).find((message) => message.method === "turn/start" && message.params.input?.[0]?.text.includes("agentic achieved"));
   assert.equal(agenticTurn.params.outputSchema.properties.agentic_exit_code.enum.includes(13), false);
   assert.deepEqual(agenticTurn.params.outputSchema.required, ["goal_achieved", "agentic_exit_code", "summary", "reason"]);
 
   result = invoke(workspace, "--broker", "--new", "--agentic-error-code", "--json", "--prompt", "agentic not achieved");
   assert.equal(result.status, 1, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), {
+  const agenticEvents = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(agenticEvents.length > 1, "agentic JSON mode should preserve interim protocol events");
+  assert.deepEqual(agenticEvents.at(-1), {
     goal_achieved: false,
     agentic_exit_code: 1,
     summary: "goal incomplete",
