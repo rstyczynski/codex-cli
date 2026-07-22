@@ -3,6 +3,7 @@
 ## Table of Contents
 
 - [Current State](#current-state)
+- [Release Versioning Policy](#release-versioning-policy)
 - [Done](#done)
   - [CDX-1 Terminal Codex App-Server Client](#cdx-1-terminal-codex-app-server-client)
   - [CDX-2 Pragmatic Test Coverage](#cdx-2-pragmatic-test-coverage)
@@ -45,6 +46,16 @@ npm run test:coverage
 ```
 
 Configured coverage thresholds are 90% lines, 70% branches, and 80% functions for `bin/codex-cli`.
+
+## Release Versioning Policy
+
+Release versions group related work; they do not advance once for every individual backlog item.
+
+- A coherent group of completed backlog items is released in the next minor version (`1.x.0`). Move each completed item to **Done** and record `Status: implemented in v1.x.0`.
+- Backward-compatible bug fixes and regressions released after that feature group use patch versions (`1.x.y`). Move fixed entries from the active section of `BUGS.md` to **Resolved** and record the release version.
+- Breaking user-facing changes require the next major version.
+- An upstream issue with only a local mitigation remains active in `BUGS.md` and the backlog until the upstream behavior is fixed; describe the mitigation but do not mark it resolved.
+- Every versioned release updates `CHANGELOG.md`, tests, and affected documentation/examples before its tag is created.
 
 ## Done
 
