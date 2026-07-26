@@ -2,6 +2,31 @@
 
 - Upstream app-server still allows workspace file edits when `sandbox: "read-only"` is supplied only to `turn/start`. `codex-cli` now fails closed for existing-thread `--turn-params sandbox` usage and promotes it to `thread/start` for `--new` runs.
 
+## Open
+
+- Broker startup cannot safely use a long Unix-domain socket path by default.
+  On macOS, a normal temporary test-fixture path exceeded the socket limit and
+  `codex-cli --broker start` failed with `broker socket path is too long`.
+  The CLI detects the condition but requires every caller to select a short
+  `--broker-socket`; it should choose a safe per-user temporary socket path, or
+  offer an automatic fallback. Sprint 9 worked around this with
+  `/tmp/tfg-codex-cli.*/b.sock`.
+
+- `--agentic-error-code` appends its completion-contract prose to every
+  effective user message. This remains true when callers provide the contract
+  centrally through `--config-json` `developer_instructions`. It preserves a
+  natural local prompt file but pollutes the Codex thread transcript and makes
+  centralized prompt injection incomplete. Prefer enforcing the result through
+  `turn/start.outputSchema` and configuration without modifying each operator
+  message.
+
+- Codex model-cache compatibility can emit repeated errors such as `failed to
+  load models cache: missing field supports_reasoning_summaries`. Sprint 9
+  prompts still completed, so this is non-fatal, but the CLI reports it as an
+  error on ordinary runs. This likely belongs to the upstream Codex
+  model-cache schema; codex-cli should either tolerate/refresh incompatible
+  cache entries or clearly classify the diagnostic as upstream and recover.
+
 ## Resolved
 
 - Fixed in `v1.0.8`: default-on interim display exposed streamed `--agentic-error-code` contract JSON directly to people using `hiai`, instead of showing useful progress. It now displays only each message's summary; raw protocol data remains available through `--json`.
