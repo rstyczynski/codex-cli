@@ -1700,7 +1700,7 @@ function serverRequestResult(options, request) {
 const BROKER_VERSION = 1;
 const BROKER_CAPABILITIES = ["agentic-result-v1", "image-attachments-v1", "prompt-attachment-actions-v1"];
 const BROKER_MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
-const BROKER_START_TIMEOUT_MS = 60000;
+const DEFAULT_BROKER_START_TIMEOUT_MS = 60000;
 const TRANSIENT_THREAD_METADATA_RETRY_COUNT = 10;
 const TRANSIENT_THREAD_METADATA_RETRY_MS = 100;
 
@@ -1841,15 +1841,21 @@ async function startBroker(options) {
   }
   const args = [path.resolve(process.argv[1]), "--broker-serve", "--cwd", options.cwd, "--broker-socket", socketPath, "--codex", options.codex];
   if (options.experimentalApi) args.push("--experimental-api");
-  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: options.cwd });
+  let brokerDiagnostics = "";
+  const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", "ignore", "pipe"], cwd: options.cwd });
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk) => { brokerDiagnostics = `${brokerDiagnostics}${chunk}`.slice(-4096); });
   child.unref();
-  const deadline = Date.now() + BROKER_START_TIMEOUT_MS;
+  const startupTimeoutMs = Math.max(DEFAULT_BROKER_START_TIMEOUT_MS, options.timeout * 1000);
+  const deadline = Date.now() + startupTimeoutMs;
   while (Date.now() < deadline) {
     const status = await probeBroker(socketPath);
-    if (status) { stderr.write(`codex-cli: broker started (pid ${status.pid}, socket ${socketPath})\n`); return; }
+    if (status) { child.stderr?.destroy(); stderr.write(`codex-cli: broker started (pid ${status.pid}, socket ${socketPath})\n`); return; }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error(`broker failed to become ready within ${BROKER_START_TIMEOUT_MS / 1000} seconds`);
+  child.stderr?.destroy();
+  const detail = brokerDiagnostics.trim();
+  throw new Error(`broker failed to become ready within ${startupTimeoutMs / 1000} seconds${detail ? `: ${detail}` : " (broker child provided no stderr)"}`);
 }
 
 async function statusBroker(options) {

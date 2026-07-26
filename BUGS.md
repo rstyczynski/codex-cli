@@ -29,6 +29,10 @@
 
 ## Resolved
 
+- Fixed locally: broker startup now honors the caller timeout and retains up to
+  4 KiB of detached-child stderr for a readiness timeout, rather than silently
+  failing after 60 seconds with no diagnostic.
+
 - Fixed in `v1.0.8`: default-on interim display exposed streamed `--agentic-error-code` contract JSON directly to people using `hiai`, instead of showing useful progress. It now displays only each message's summary; raw protocol data remains available through `--json`.
 - Fixed in `v1.0.9`: an implicit `hiai --broker start` could inherit `/` as its workspace and attempt to create `/.codex-cli`. Broker state now resolves to the Git root, or to the user's home directory outside Git; `--cwd` remains authoritative.
 - Fixed in `v1.0.7`: `--agentic-error-code` suppressed streamed assistant deltas, coupling OS exit-status handling to presentation. It now controls only the final process status while interim output and JSON event streaming remain independently configurable.
