@@ -1726,6 +1726,25 @@ async function readBrokerMetadata(pidPath) {
   try { return JSON.parse(await readFile(pidPath, "utf8")); } catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
 }
 
+function brokerDiagnosticPath(pidPath) {
+  return `${pidPath}.stderr.log`;
+}
+
+async function brokerDiagnosticTail(pidPath) {
+  try {
+    return (await readFile(brokerDiagnosticPath(pidPath), "utf8")).slice(-4096).trim();
+  } catch {
+    // Diagnostics are supplemental. A missing or unreadable log must never
+    // hide the broker failure that the caller needs to handle.
+    return "";
+  }
+}
+
+async function brokerErrorWithDiagnostics(message, pidPath) {
+  const diagnostics = await brokerDiagnosticTail(pidPath);
+  return new Error(`${message}${diagnostics ? `\nbroker diagnostics:\n${diagnostics}` : ""}`);
+}
+
 function processIsAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
@@ -1841,20 +1860,28 @@ async function startBroker(options) {
   }
   const args = [path.resolve(process.argv[1]), "--broker-serve", "--cwd", options.cwd, "--broker-socket", socketPath, "--codex", options.codex];
   if (options.experimentalApi) args.push("--experimental-api");
-  let brokerDiagnostics = "";
-  const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", "ignore", "pipe"], cwd: options.cwd });
-  child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk) => { brokerDiagnostics = `${brokerDiagnostics}${chunk}`.slice(-4096); });
+  // The broker outlives this command. Its stderr must therefore not be a
+  // pipe owned by this short-lived launcher: closing that pipe after readiness
+  // turns a later app-server diagnostic into EPIPE and can kill the broker.
+  // Keep a bounded tail at read time for both startup and post-ready failures.
+  const diagnosticPath = brokerDiagnosticPath(pidPath);
+  await unlinkIfPresent(diagnosticPath);
+  const diagnosticHandle = await open(diagnosticPath, "a", 0o600);
+  let child;
+  try {
+    child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", "ignore", diagnosticHandle.fd], cwd: options.cwd });
+  } finally {
+    await diagnosticHandle.close();
+  }
   child.unref();
   const startupTimeoutMs = Math.max(DEFAULT_BROKER_START_TIMEOUT_MS, options.timeout * 1000);
   const deadline = Date.now() + startupTimeoutMs;
   while (Date.now() < deadline) {
     const status = await probeBroker(socketPath);
-    if (status) { child.stderr?.destroy(); stderr.write(`codex-cli: broker started (pid ${status.pid}, socket ${socketPath})\n`); return; }
+    if (status) { stderr.write(`codex-cli: broker started (pid ${status.pid}, socket ${socketPath})\n`); return; }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  child.stderr?.destroy();
-  const detail = brokerDiagnostics.trim();
+  const detail = await brokerDiagnosticTail(pidPath);
   throw new Error(`broker failed to become ready within ${startupTimeoutMs / 1000} seconds${detail ? `: ${detail}` : " (broker child provided no stderr)"}`);
 }
 
@@ -2494,9 +2521,9 @@ async function serveBroker(options) {
 }
 
 async function runBrokerClient(options, prompt, promptParts, savedState) {
-  const { socketPath } = resolveBrokerPaths(options);
+  const { socketPath, pidPath } = resolveBrokerPaths(options);
   const status = await probeBroker(socketPath);
-  if (!status) throw new Error(`broker is not running; start it with: node ${process.argv[1]} --broker start`);
+  if (!status) throw await brokerErrorWithDiagnostics(`broker is not running; start it with: node ${process.argv[1]} --broker start`, pidPath);
   if (options.experimentalApi && !status.experimentalApi) throw new Error("broker was not started with --experimental-api; stop it and restart with: --broker start --experimental-api");
   if (options.agenticErrorCode && !status.capabilities?.includes("agentic-result-v1")) {
     throw new Error("running broker does not support --agentic-error-code; restart it with: codex-cli --broker stop && codex-cli --broker start");
@@ -2520,6 +2547,8 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
     const progress = new ProgressSpinner(options.progress && stderr.isTTY && !options.json);
     const renderer = createHumanRenderer(options, progress);
     let finished = false;
+    let transportFailurePending = false;
+    let brokerResponseFailurePending = false;
     const finish = (error) => {
       if (finished) return;
       finished = true;
@@ -2527,8 +2556,28 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
       socket.destroy();
       if (error) reject(error); else resolve();
     };
-    socket.once("error", finish);
-    socket.once("close", () => { if (!finished) finish(new Error("broker connection closed before completion")); });
+    const finishTransportFailure = (message) => {
+      if (finished || transportFailurePending || brokerResponseFailurePending) return;
+      transportFailurePending = true;
+      void brokerErrorWithDiagnostics(message, pidPath).then(finish, () => finish(new Error(message)));
+    };
+    const finishBrokerResponseFailure = (message, exitCode) => {
+      if (finished || brokerResponseFailurePending) return;
+      // A broker normally closes its socket immediately after it sends a
+      // terminal error. Mark the structured response first so that the close
+      // event cannot race the diagnostic-log read and replace its exit code.
+      brokerResponseFailurePending = true;
+      void brokerErrorWithDiagnostics(message, pidPath).then((error) => {
+        error.exitCode = exitCode;
+        finish(error);
+      }, () => {
+        const error = new Error(message);
+        error.exitCode = exitCode;
+        finish(error);
+      });
+    };
+    socket.once("error", (error) => finishTransportFailure(`broker connection failed: ${error.message}`));
+    socket.once("close", () => finishTransportFailure("broker connection closed before completion"));
     socket.once("connect", () => {
       sendBrokerMessage(socket, {
         type: "run",
@@ -2615,7 +2664,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
         stderr.write(`codex-cli: ${codexErrorHeading(message)}: ${message.message}\n`);
         progress.start();
       } else if (message.type === "error") {
-        const error = new Error(message.message ?? "broker failed"); error.exitCode = message.exitCode ?? 2; finish(error);
+        finishBrokerResponseFailure(message.message ?? "broker failed", message.exitCode ?? 2);
       }
     });
   });

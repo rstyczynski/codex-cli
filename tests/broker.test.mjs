@@ -387,13 +387,30 @@ test("broker cleans up after app-server crash and can restart", async (t) => {
   assert.equal(result.status, 0, result.stderr);
   result = invoke(workspace, "--broker", "--new", "--timeout", "5", "--prompt", "crash app server");
   assert.equal(result.status, 2, result.stderr);
-  assert.match(result.stderr, /app-server exited|connection closed/);
+  assert.match(result.stderr, /broker app-server exited unexpectedly; restart the broker/);
+  assert.match(result.stderr, /fake app-server crash diagnostic/);
+  assert.doesNotMatch(result.stderr, /broker connection closed before completion/);
   await new Promise((resolve) => setTimeout(resolve, 200));
   await assert.rejects(stat(path.join(workspace, "broker.sock")), { code: "ENOENT" });
   await assert.rejects(stat(path.join(workspace, "broker.pid")), { code: "ENOENT" });
   result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
   result = invoke(workspace, "--broker", "stop");
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("broker survives app-server diagnostics emitted after readiness", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker post-ready stderr "));
+  t.after(() => invoke(workspace, "--broker", "stop"));
+  const marker = "fixture post-ready app-server diagnostic";
+  let result = invokeWithEnv(workspace, { FAKE_CODEX_POST_READY_STDERR: marker }, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--prompt", "post-ready diagnostic survives");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 1: post-ready diagnostic survives/);
+  assert.match(await readFile(path.join(workspace, "broker.pid.stderr.log"), "utf8"), new RegExp(marker));
+  result = invoke(workspace, "--broker", "status");
   assert.equal(result.status, 0, result.stderr);
 });
 

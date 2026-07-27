@@ -222,7 +222,14 @@ input.on("line", (line) => {
         setTimeout(() => process.exit(7), 10);
       }, 5);
     }
-    if (prompt.includes("crash")) return setTimeout(() => process.exit(7), 5);
+    if (prompt.includes("crash")) return setTimeout(() => {
+      process.stderr.write("fake app-server crash diagnostic\n");
+      process.exit(7);
+    }, 5);
+    if (process.env.FAKE_CODEX_POST_READY_STDERR && !globalThis.postReadyDiagnosticWritten) {
+      globalThis.postReadyDiagnosticWritten = true;
+      process.stderr.write(`${process.env.FAKE_CODEX_POST_READY_STDERR}\n`);
+    }
     if (prompt.includes("interrupted reason")) return setTimeout(() => {
       turn.status = "interrupted";
       turn.error = { message: "simulated interruption", additionalDetails: "simulated diagnostic detail" };

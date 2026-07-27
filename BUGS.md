@@ -47,6 +47,15 @@
 
 ## Resolved
 
+- Fixed locally: a broker could report ready, then die on the first turn when
+  its app-server wrote to stderr. The short-lived launcher had destroyed the
+  detached broker's stderr pipe after readiness, so that later write could
+  raise `EPIPE` and surface only as `broker connection closed before
+  completion`. Broker stderr now goes to a private `${pid}.stderr.log` for its
+  full lifetime; client-side transport and structured broker failures include
+  its last 4 KiB. Regression coverage verifies both a post-ready diagnostic
+  and a crashing app-server diagnostic.
+
 - Fixed locally: broker startup now honors the caller timeout and retains up to
   4 KiB of detached-child stderr for a readiness timeout, rather than silently
   failing after 60 seconds with no diagnostic.
