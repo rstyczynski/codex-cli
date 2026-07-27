@@ -2483,6 +2483,14 @@ async function serveBroker(options) {
   const signal = () => cleanup().then(() => process.exit(0));
   process.once("SIGTERM", signal);
   process.once("SIGINT", signal);
+  // Test-only containment: a killed Node test runner cannot execute its
+  // t.after broker stop hook. A lease prevents those detached fake brokers
+  // from accumulating while leaving normal broker persistence unchanged.
+  const testLeaseSeconds = Number(process.env.CODEX_CLI_TEST_BROKER_LEASE_SECONDS ?? "");
+  if (Number.isFinite(testLeaseSeconds) && testLeaseSeconds > 0) {
+    const lease = setTimeout(() => cleanup().then(() => process.exit(0)), testLeaseSeconds * 1000);
+    lease.unref();
+  }
 }
 
 async function runBrokerClient(options, prompt, promptParts, savedState) {

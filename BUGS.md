@@ -27,6 +27,24 @@
   model-cache schema; codex-cli should either tolerate/refresh incompatible
   cache entries or clearly classify the diagnostic as upstream and recover.
 
+- Interrupted test runs leak detached fake Codex brokers. The test suite starts
+  `codex-cli --broker-serve` with
+  `tests/fixtures/fake-codex.mjs app-server --stdio`; normal `t.after()` hooks
+  stop them, but an interrupted Node test process bypasses those hooks and
+  leaves both the broker and fake child alive indefinitely. Sprint 9 found a
+  large population of stale pairs from temporary `codex cli ...` fixture
+  directories. Add an interrupt-safe test broker registry/teardown and a
+  suite-start stale-fixture cleanup; do not change production broker
+  persistence semantics. Fixed locally with a test-only 60-second broker lease
+  (`CODEX_CLI_TEST_BROKER_LEASE_SECONDS`) in the standard test command.
+
+- The upstream Codex app-server can fail before broker readiness when its
+  SQLite state runtime cannot initialize under `~/.codex`. Sprint 9 observed:
+  `failed to initialize sqlite state runtime under /Users/rstyczynski/.codex`.
+  `codex-cli` correctly exposes the child stderr after the broker diagnostic
+  fix, but the caller must run from a terminal/sandbox that permits Codex state
+  initialization. This is not a broker socket or Terraform workflow failure.
+
 ## Resolved
 
 - Fixed locally: broker startup now honors the caller timeout and retains up to

@@ -11,7 +11,7 @@
   },
   "scripts": {
     "check": "node --check bin/codex-cli && node --check bin/cpb-paste",
-    "test": "npm run check && node --test tests/*.test.mjs",
+    "test": "npm run check && CODEX_CLI_TEST_BROKER_LEASE_SECONDS=60 node --test tests/*.test.mjs",
     "test:attack": "node tests/run-attack.mjs",
     "test:parity": "node --check tests/parity.mjs && CODEX_PARITY=1 node --test tests/parity.mjs",
     "test:coverage": "node --experimental-test-coverage --test-coverage-include=bin/codex-cli --test-coverage-include=bin/cpb-paste --test-coverage-lines=90 --test-coverage-branches=70 --test-coverage-functions=80 --test tests/*.test.mjs",
