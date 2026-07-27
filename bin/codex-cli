@@ -2459,14 +2459,20 @@ async function serveBroker(options) {
       await unlinkIfPresent(pidPath);
     }
   };
-  app.child.once("exit", () => {
+  let appExitHandled = false;
+  const appServerExited = (detail) => {
+    if (appExitHandled) return;
+    appExitHandled = true;
     appHealthy = false;
     if (shuttingDown) return;
+    stderr.write(`codex-cli broker: app-server exited unexpectedly (${detail})\n`);
     active?.pendingApproval?.resolve("decline");
     active?.pendingUserInput?.resolve({ answers: {} });
     active?.peer.send({ type: "error", code: "APP_SERVER_EXITED", exitCode: 2, message: "broker app-server exited unexpectedly; restart the broker" });
     setTimeout(() => cleanup().then(() => process.exit(2)), 20);
-  });
+  };
+  app.child.once("error", (error) => appServerExited(`spawn error: ${error.message}`));
+  app.child.once("exit", (code, signal) => appServerExited(signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`));
 
   server = net.createServer((socket) => {
     let peer;
@@ -2493,6 +2499,7 @@ async function serveBroker(options) {
       }
       if (message.type !== "run") { peer.send({ type: "error", code: "TYPE", exitCode: 2, message: "unsupported broker message type" }); return peer.close(); }
       try { validateBrokerRun(message, workspace); } catch (error) { peer.send({ type: "error", code: "INVALID_REQUEST", exitCode: 2, message: error.message }); return peer.close(); }
+      if (!appHealthy) { peer.send({ type: "error", code: "APP_SERVER_EXITED", exitCode: 2, message: "broker app-server exited unexpectedly; restart the broker" }); return peer.close(); }
       if (active) { peer.send({ type: "error", code: "BUSY", exitCode: 75, message: "broker is busy with another turn" }); return peer.close(); }
       const run = { peer, request: message, streamedItems: new Set(), streamBuffers: new Map(), renderedItems: new Set(), renderedTexts: new Set(), disconnected: false, lastTurnError: undefined, terminalTurnError: undefined, terminalTurnRequiresInterrupt: false };
       active = run;

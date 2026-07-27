@@ -390,6 +390,7 @@ test("broker cleans up after app-server crash and can restart", async (t) => {
   assert.match(result.stderr, /broker app-server exited unexpectedly; restart the broker/);
   assert.match(result.stderr, /fake app-server crash diagnostic/);
   assert.doesNotMatch(result.stderr, /broker connection closed before completion/);
+  assert.match(await readFile(path.join(workspace, "broker.pid.stderr.log"), "utf8"), /app-server exited unexpectedly \(exit code 7\)/);
   await new Promise((resolve) => setTimeout(resolve, 200));
   await assert.rejects(stat(path.join(workspace, "broker.sock")), { code: "ENOENT" });
   await assert.rejects(stat(path.join(workspace, "broker.pid")), { code: "ENOENT" });
