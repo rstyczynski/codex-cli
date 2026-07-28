@@ -441,6 +441,41 @@ test("broker records a crashed procedure and resumes its former thread", async (
   assert.equal(trace.filter((message) => message.method === "thread/start").length, 1);
 });
 
+test("broker records a killed broker process and resumes its former thread", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker killed process "));
+  t.after(() => invoke(workspace, "--broker", "stop"));
+
+  let result = invoke(workspace, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--prompt", "conversation before broker loss");
+  assert.equal(result.status, 0, result.stderr);
+
+  const inFlight = invokeAsync(workspace, "--broker", "--timeout", "5", "--prompt", "slow broker loss");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  result = invoke(workspace, "--broker", "status");
+  assert.equal(result.status, 0, result.stderr);
+  process.kill(JSON.parse(result.stdout).pid, "SIGKILL");
+  const killed = await inFlight.done;
+  assert.equal(killed.status, 2, killed.stderr);
+  assert.match(killed.stderr, /CRASH DETECTED: the Codex procedure for thread thread-1 terminated unexpectedly/);
+
+  const crashPath = path.join(workspace, ".codex-cli", "procedure-crash.json");
+  const crash = JSON.parse(await readFile(crashPath, "utf8"));
+  assert.equal(crash.threadId, "thread-1");
+  assert.equal(crash.prompt, "slow broker loss");
+  assert.match(crash.brokerDiagnostic, /broker connection (closed|failed)/);
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  result = invokeWithEnv(workspace, { FAKE_CODEX_RESUME_THREADS: "1" }, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--prompt", "continue after broker loss");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /recovering crashed procedure in thread thread-1/);
+  const recovered = JSON.parse(await readFile(crashPath, "utf8"));
+  assert.ok(recovered.recoveredAt);
+});
+
 test("broker survives app-server diagnostics emitted after readiness", async (t) => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker post-ready stderr "));
