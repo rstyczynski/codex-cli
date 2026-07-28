@@ -2728,7 +2728,10 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
         void recordProcedureEvent({ type: "assistant-delta", threadId: procedure.threadId, text: message.delta }).catch(finish);
         renderer.agentDelta(message.itemId, message.delta);
       }
-      else if (message.type === "item") renderer.item(message.item, message.phase);
+      else if (message.type === "item") {
+        void recordProcedureEvent({ type: "assistant-item", threadId: procedure.threadId, phase: message.phase, item: message.item }).catch(finish);
+        renderer.item(message.item, message.phase);
+      }
       else if (message.type === "debug") { progress.stop(); stderr.write(`codex-cli: debug: ${message.message}\n`); }
       else if (message.type === "config-warning") { progress.stop(); stderr.write(`codex-cli: warning: ${message.warning}\n`); progress.start(); }
       else if (message.type === "event") stdout.write(`${JSON.stringify(message.event)}\n`);
@@ -2762,7 +2765,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
         terminalMessageReceived = true;
         progress.stop();
         try {
-          await recordProcedureEvent({ type: "turn-completed", threadId: procedure.threadId });
+          await recordProcedureEvent({ type: "turn-completed", threadId: procedure.threadId, finalMessage: message.finalMessage ?? null });
           if (options.recoverCrash) await markProcedureRecovered(options.state, procedure.threadId);
           if (options.agenticErrorCode) emitAgenticResult(options, message.finalMessage);
           else if (!options.json) stdout.write("\n\n");
