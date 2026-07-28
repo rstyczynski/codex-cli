@@ -29,5 +29,5 @@ ls -la .codex-cli/codex-cli-broker.sock \
 if [[ "$broker_started_here" == true ]]; then
   codex-cli --broker stop
   codex-cli --broker start
-  printf '\nBroker restarted after code/config changes.\n'
+  printf '\nBroker restarted after code/config changes; the next implicit prompt rejoins the saved thread.\n'
 fi

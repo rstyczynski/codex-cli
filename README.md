@@ -8,6 +8,7 @@
 - [Requirements](#requirements)
 - [Examples](#examples)
   - [Broker mode](#broker-mode)
+  - [Conversation recovery](#conversation-recovery)
   - [Threads](#threads)
   - [Approvals and user input](#approvals-and-user-input)
   - [Client configuration](#client-configuration)
@@ -132,19 +133,36 @@ codex-cli --cwd /path/to/other-workspace --broker start
 
 Use the same directory context (or the same `--cwd`) for `status`, `threads`, and `stop`. These brokers are independent: they have separate sockets, selected threads, and one active-turn limit each.
 
-An implicit saved thread is intentionally replaced with a new one if the broker has restarted or if the saved thread is no longer available, except when an unresolved procedure-crash record requires recovery of that exact thread. An explicit `--thread THREAD_ID` is strict: it reports a missing thread rather than silently switching to another conversation.
+The selected thread is durable workspace state. After a broker restart, the
+next implicit prompt rejoins it; the CLI never silently replaces it with a new
+conversation. An explicit `--thread THREAD_ID` is strict: it reports a missing
+thread rather than silently switching to another conversation.
 
-#### Crash recovery
+### Conversation recovery
 
-If the app-server dies while a broker turn is active, `codex-cli` writes
+If a broker or app-server restart occurs, start the broker and send the next
+prompt normally. `codex-cli` reads `.codex-cli/codex-cli.json` and rejoins its
+saved `threadId` automatically:
+
+```bash
+hiai start
+hiai "Continue our previous conversation."
+```
+
+To join a particular saved thread explicitly, use the thread ID printed in the
+crash message or stored in `.codex-cli/codex-cli.json`:
+
+```bash
+hiai --thread THREAD_ID "Continue our previous conversation."
+```
+
+If the app-server dies while a broker turn is active, `codex-cli` additionally writes
 `.codex-cli/procedure-crash.json` and an append-only
 `.codex-cli/procedure-transcript.jsonl` beside the saved thread state. The
 terminal error names the crashed thread and prints the exact `--thread` recovery
-command. After any broker restart, `codex-cli` rejoins the thread saved in
-`.codex-cli/codex-cli.json`; an unresolved crash record adds its durable
-diagnostics to that recovery. If the app-server cannot resume the saved thread,
-the CLI keeps the transcript and stops instead of starting a replacement
-conversation.
+command. An unresolved crash record adds durable diagnostics to the automatic
+rejoin. If the app-server cannot resume the saved thread, the CLI keeps the
+transcript and stops instead of starting a replacement conversation.
 
 Stop the workspace broker when it is no longer needed. The example stops only
 the broker instance that it started.
@@ -160,7 +178,10 @@ is also available. A thread ID may be passed explicitly for strict selection.
 ./examples/threads.sh
 ```
 
-Broker-created threads belong to the broker's running app-server. After a broker restart, the next implicit prompt starts a fresh thread. The old thread may still appear in `--broker threads`, but its ID is not assumed resumable by the new broker instance.
+Broker-created threads are selected through `.codex-cli/codex-cli.json` and are
+rejoined after broker restart. If the app-server reports that a saved thread is
+unavailable, the CLI stops with the original ID and transcript instead of
+starting a fresh thread.
 
 ### Approvals and user input
 
@@ -584,6 +605,10 @@ Broker mode creates workspace-scoped files. An implicit broker workspace is the 
 - `.codex-cli/codex-cli-broker.sock`: private Unix socket
 - `.codex-cli/codex-cli-broker.pid`: broker metadata
 - `.codex-cli/codex-cli.json`: selected thread and model state
+- `.codex-cli/procedure-transcript.jsonl`: append-only operator-visible
+  conversation/procedure record
+- `.codex-cli/procedure-crash.json`: crash diagnostics and recovery target,
+  present only after an interrupted active procedure
 
 On Windows, the broker endpoint is a workspace-hashed private named pipe and
 the metadata file is `.codex-cli/broker-<hash>.pid`; the selected-thread state

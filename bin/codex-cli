@@ -75,7 +75,7 @@ Examples:
 const AGENTIC_SYSTEM_ERROR_EXIT_CODE = 70;
 const AGENTIC_CONTRACT_ERROR_EXIT_CODE = 72;
 const AGENTIC_RESERVED_EXIT_CODES = new Set([13]);
-const CLI_VERSION = "1.0.11";
+const CLI_VERSION = "1.0.12";
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_HELPER_OUTPUT_BYTES = 20 * 1024 * 1024;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);

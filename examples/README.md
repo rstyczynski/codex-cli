@@ -32,7 +32,7 @@ example only inspects configuration and does not contact Codex.
 | Direct mode | [`direct-mode.sh`](direct-mode.sh) | Isolated app-server turn and optional REPL |
 | Existing app-server socket | [`existing-socket.sh`](existing-socket.sh) | Connect to a socket owned by another process |
 | Bash completion | [`bash-completion.sh`](bash-completion.sh) | Complete options, models, and registered prompt-action tokens |
-| Local files and lifecycle | [`local-files-and-lifecycle.sh`](local-files-and-lifecycle.sh) | State files and safe broker restart/cleanup |
+| Local files and lifecycle | [`local-files-and-lifecycle.sh`](local-files-and-lifecycle.sh) | State files, saved-thread rejoin, and safe broker restart/cleanup |
 | Exit behavior | [`exit-behavior.sh`](exit-behavior.sh) | Separate agent outcomes from system failures |
 
 The JSON files next to the scripts are intentionally committed so the

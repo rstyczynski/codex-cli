@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.12
+
+- Preserve an append-only workspace procedure transcript and a crash record for
+  active broker procedures interrupted by an app-server or broker-process loss.
+- Rejoin the saved Codex thread after every broker restart instead of silently
+  opening a replacement conversation; stop with retained recovery evidence if
+  the app-server cannot resume it.
+- Print the former thread ID and an explicit recovery command when a procedure
+  crashes.
+
 ## 1.0.11
 
 - Let every Boolean option accept an optional, case-insensitive value: `true`/`false`, `on`/`off`, `1`/`0`, or `yes`/`no`.
