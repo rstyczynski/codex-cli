@@ -400,6 +400,47 @@ test("broker cleans up after app-server crash and can restart", async (t) => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("broker records a crashed procedure and resumes its former thread", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker recover crash "));
+  t.after(() => invoke(workspace, "--broker", "stop"));
+
+  let result = invoke(workspace, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--prompt", "conversation before failure");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 1: conversation before failure/);
+
+  result = invoke(workspace, "--broker", "--prompt", "crash app server");
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /CRASH DETECTED: the Codex procedure for thread thread-1 terminated unexpectedly/);
+  assert.match(result.stderr, /--thread thread-1/);
+  const crashPath = path.join(workspace, ".codex-cli", "procedure-crash.json");
+  const transcriptPath = path.join(workspace, ".codex-cli", "procedure-transcript.jsonl");
+  const crash = JSON.parse(await readFile(crashPath, "utf8"));
+  assert.equal(crash.threadId, "thread-1");
+  assert.equal(crash.prompt, "crash app server");
+  assert.equal(crash.clientExitCode, 2);
+  assert.match(crash.brokerDiagnostic, /app-server exited unexpectedly/);
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  result = invokeWithEnv(workspace, { FAKE_CODEX_RESUME_THREADS: "1" }, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--prompt", "continue after failure");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /recovering crashed procedure in thread thread-1/);
+  assert.match(result.stdout, /reply 1: continue after failure/);
+  const recovered = JSON.parse(await readFile(crashPath, "utf8"));
+  assert.ok(recovered.recoveredAt);
+  const transcript = await readFile(transcriptPath, "utf8");
+  assert.match(transcript, /conversation before failure/);
+  assert.match(transcript, /crash app server/);
+  assert.match(transcript, /continue after failure/);
+  const trace = await readTrace(workspace);
+  assert.ok(trace.some((message) => message.method === "thread/resume" && message.params.threadId === "thread-1"));
+  assert.equal(trace.filter((message) => message.method === "thread/start").length, 1);
+});
+
 test("broker survives app-server diagnostics emitted after readiness", async (t) => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker post-ready stderr "));

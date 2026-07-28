@@ -97,7 +97,7 @@ input.on("line", (line) => {
   }
   if (method === "thread/resume") {
     let thread = threads.get(params.threadId);
-    if (!thread && params.threadId?.startsWith("not-loaded-")) {
+    if (!thread && (params.threadId?.startsWith("not-loaded-") || (process.env.FAKE_CODEX_RESUME_THREADS === "1" && params.threadId?.startsWith("thread-")))) {
       thread = { id: params.threadId, cwd: params.cwd, turns: [], status: { type: "idle" } };
       threads.set(thread.id, thread);
     }

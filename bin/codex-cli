@@ -705,6 +705,57 @@ export async function saveThread(statePath, threadId, model, extra = {}) {
   }
 }
 
+function procedurePaths(statePath) {
+  const directory = path.dirname(statePath);
+  return {
+    crash: path.join(directory, "procedure-crash.json"),
+    transcript: path.join(directory, "procedure-transcript.jsonl"),
+  };
+}
+
+async function appendProcedureEvent(statePath, event) {
+  const { transcript } = procedurePaths(statePath);
+  await mkdir(path.dirname(transcript), { recursive: true, mode: 0o700 });
+  await appendFile(transcript, `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`, { encoding: "utf8", mode: 0o600 });
+  return transcript;
+}
+
+async function readProcedureCrash(statePath) {
+  const { crash } = procedurePaths(statePath);
+  try {
+    const incident = JSON.parse(await readFile(crash, "utf8"));
+    return incident && typeof incident.threadId === "string" ? incident : undefined;
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    throw new Error(`cannot read procedure crash record at ${crash}: ${error.message}`);
+  }
+}
+
+async function writeProcedureCrash(statePath, incident) {
+  const { crash } = procedurePaths(statePath);
+  const directory = path.dirname(crash);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = path.join(directory, `.${path.basename(crash)}.${randomBytes(16).toString("hex")}.tmp`);
+  try {
+    await writeFile(temporary, `${JSON.stringify(incident, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await rename(temporary, crash);
+  } finally {
+    await unlinkIfPresent(temporary).catch(() => {});
+  }
+  return crash;
+}
+
+async function markProcedureRecovered(statePath, threadId) {
+  const incident = await readProcedureCrash(statePath);
+  if (!incident || incident.threadId !== threadId || incident.recoveredAt) return;
+  await writeProcedureCrash(statePath, { ...incident, recoveredAt: new Date().toISOString() });
+  await appendProcedureEvent(statePath, { type: "procedure-recovered", threadId, crashDetectedAt: incident.detectedAt });
+}
+
+function crashRecoveryMessage(threadId, transcriptPath) {
+  return `CRASH DETECTED: the Codex procedure for thread ${threadId} terminated unexpectedly. Conversation is preserved in ${transcriptPath}. Recover by joining the former thread: codex-cli --broker --thread ${threadId} "<next prompt>"`;
+}
+
 async function validateWorkspace(workspace) {
   try {
     if (!(await stat(workspace)).isDirectory()) throw new Error("not a directory");
@@ -2541,7 +2592,16 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
   if (promptParts.some((part) => part.type === "action") && !status.capabilities?.includes("prompt-attachment-actions-v1")) {
     throw new Error("running broker does not support prompt attachment actions; restart it with: codex-cli --broker stop && codex-cli --broker start");
   }
-  if (!options.new && !options.threadExplicit && (
+  const crash = await readProcedureCrash(options.state);
+  if (!options.new && !options.threadExplicit && crash?.threadId === savedState.threadId && !crash.recoveredAt && (
+    savedState.transport !== "broker" ||
+    !savedState.brokerInstanceId ||
+    savedState.brokerInstanceId !== status.instanceId
+  )) {
+    options.thread = crash.threadId;
+    options.recoverCrash = true;
+    stderr.write(`codex-cli: recovering crashed procedure in thread ${crash.threadId}\n`);
+  } else if (!options.new && !options.threadExplicit && (
     savedState.transport !== "broker" ||
     !savedState.brokerInstanceId ||
     savedState.brokerInstanceId !== status.instanceId
@@ -2553,9 +2613,16 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
     const socket = net.createConnection(socketPath);
     const progress = new ProgressSpinner(options.progress && stderr.isTTY && !options.json);
     const renderer = createHumanRenderer(options, progress);
+    const procedure = { threadId: options.thread, startedAt: new Date().toISOString(), prompt };
+    let procedureWrite = Promise.resolve();
+    const recordProcedureEvent = (event) => {
+      procedureWrite = procedureWrite.then(() => appendProcedureEvent(options.state, event));
+      return procedureWrite;
+    };
     let finished = false;
     let transportFailurePending = false;
     let brokerResponseFailurePending = false;
+    let terminalMessageReceived = false;
     const finish = (error) => {
       if (finished) return;
       finished = true;
@@ -2563,23 +2630,51 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
       socket.destroy();
       if (error) reject(error); else resolve();
     };
-    const finishTransportFailure = (message) => {
-      if (finished || transportFailurePending || brokerResponseFailurePending) return;
-      transportFailurePending = true;
-      void brokerErrorWithDiagnostics(message, pidPath).then(finish, () => finish(new Error(message)));
+    const recordCrash = async (detail) => {
+      if (!procedure.threadId) return undefined;
+      const transcriptPath = await recordProcedureEvent({ type: "procedure-crash", threadId: procedure.threadId, prompt, detail });
+      const crashPath = await writeProcedureCrash(options.state, {
+        version: 1,
+        detectedAt: new Date().toISOString(),
+        threadId: procedure.threadId,
+        prompt,
+        clientExitCode: 2,
+        brokerInstanceId: status.instanceId,
+        lastCompletedAction: "turn started",
+        brokerDiagnostic: detail,
+        transcriptPath,
+      });
+      return { crashPath, transcriptPath };
     };
-    const finishBrokerResponseFailure = (message, exitCode) => {
+    const finishTransportFailure = (message) => {
+      if (finished || terminalMessageReceived || transportFailurePending || brokerResponseFailurePending) return;
+      transportFailurePending = true;
+      void brokerErrorWithDiagnostics(message, pidPath).then(async (error) => {
+        finish(error);
+      }, async () => {
+        finish(new Error(message));
+      });
+    };
+    const finishBrokerResponseFailure = (message, exitCode, unexpectedTermination = false) => {
       if (finished || brokerResponseFailurePending) return;
       // A broker normally closes its socket immediately after it sends a
       // terminal error. Mark the structured response first so that the close
       // event cannot race the diagnostic-log read and replace its exit code.
       brokerResponseFailurePending = true;
-      void brokerErrorWithDiagnostics(message, pidPath).then((error) => {
+      void brokerErrorWithDiagnostics(message, pidPath).then(async (error) => {
         error.exitCode = exitCode;
+        if (unexpectedTermination) {
+          const incident = await recordCrash(error.message);
+          if (incident) error.message = `${error.message}\n${crashRecoveryMessage(procedure.threadId, incident.transcriptPath)}`;
+        }
         finish(error);
-      }, () => {
+      }, async () => {
         const error = new Error(message);
         error.exitCode = exitCode;
+        if (unexpectedTermination) {
+          const incident = await recordCrash(message);
+          if (incident) error.message = `${message}\n${crashRecoveryMessage(procedure.threadId, incident.transcriptPath)}`;
+        }
         finish(error);
       });
     };
@@ -2589,7 +2684,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
       sendBrokerMessage(socket, {
         type: "run",
         new: options.new,
-        autoNewOnStale: !options.threadExplicit,
+        autoNewOnStale: !options.threadExplicit && !options.recoverCrash,
         resumeActiveTurn: !options.threadExplicit && (savedState.lastPrompt === prompt || !savedState.lastPrompt),
         debug: options.debug,
         agenticErrorCode: options.agenticErrorCode,
@@ -2618,6 +2713,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
       progress.advance();
       if (message.type === "thread") {
         options.thread = message.threadId;
+        procedure.threadId = message.threadId;
         try { await saveThread(options.state, message.threadId, options.clearModel ? undefined : options.model, { transport: "broker", brokerInstanceId: message.instanceId, lastPrompt: prompt }); }
         catch (error) { finish(error); return; }
         if (options.json) stdout.write(`${JSON.stringify({ method: "thread/selected", params: { threadId: message.threadId, brokerInstanceId: message.instanceId } })}\n`);
@@ -2626,7 +2722,12 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
           stderr.write(`codex-cli: started thread ${message.threadId}\n`);
           progress.start();
         }
-      } else if (message.type === "delta") renderer.agentDelta(message.itemId, message.delta);
+        try { await recordProcedureEvent({ type: "turn-started", threadId: message.threadId, prompt, brokerInstanceId: message.instanceId }); }
+        catch (error) { finish(error); return; }
+      } else if (message.type === "delta") {
+        void recordProcedureEvent({ type: "assistant-delta", threadId: procedure.threadId, text: message.delta }).catch(finish);
+        renderer.agentDelta(message.itemId, message.delta);
+      }
       else if (message.type === "item") renderer.item(message.item, message.phase);
       else if (message.type === "debug") { progress.stop(); stderr.write(`codex-cli: debug: ${message.message}\n`); }
       else if (message.type === "config-warning") { progress.stop(); stderr.write(`codex-cli: warning: ${message.warning}\n`); progress.start(); }
@@ -2658,8 +2759,11 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
         } finally { terminal.close(); }
         sendBrokerMessage(socket, { type: "user-input-response", requestId: message.requestId, answers });
       } else if (message.type === "completed") {
+        terminalMessageReceived = true;
         progress.stop();
         try {
+          await recordProcedureEvent({ type: "turn-completed", threadId: procedure.threadId });
+          if (options.recoverCrash) await markProcedureRecovered(options.state, procedure.threadId);
           if (options.agenticErrorCode) emitAgenticResult(options, message.finalMessage);
           else if (!options.json) stdout.write("\n\n");
           finish();
@@ -2671,7 +2775,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
         stderr.write(`codex-cli: ${codexErrorHeading(message)}: ${message.message}\n`);
         progress.start();
       } else if (message.type === "error") {
-        finishBrokerResponseFailure(message.message ?? "broker failed", message.exitCode ?? 2);
+        finishBrokerResponseFailure(message.message ?? "broker failed", message.exitCode ?? 2, message.code === "APP_SERVER_EXITED");
       }
     });
   });
