@@ -2593,14 +2593,18 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
     throw new Error("running broker does not support prompt attachment actions; restart it with: codex-cli --broker stop && codex-cli --broker start");
   }
   const crash = await readProcedureCrash(options.state);
-  if (!options.new && !options.threadExplicit && crash?.threadId === savedState.threadId && !crash.recoveredAt && (
-    savedState.transport !== "broker" ||
+  const brokerRestarted = savedState.transport !== "broker" ||
     !savedState.brokerInstanceId ||
-    savedState.brokerInstanceId !== status.instanceId
-  )) {
-    options.thread = crash.threadId;
-    options.recoverCrash = true;
-    stderr.write(`codex-cli: recovering crashed procedure in thread ${crash.threadId}\n`);
+    savedState.brokerInstanceId !== status.instanceId;
+  if (!options.new && !options.threadExplicit && brokerRestarted && savedState.threadId) {
+    options.thread = crash?.threadId === savedState.threadId && !crash.recoveredAt
+      ? crash.threadId
+      : savedState.threadId;
+    options.recoverCrash = crash?.threadId === savedState.threadId && !crash.recoveredAt;
+    options.rejoinSavedThread = true;
+    stderr.write(options.recoverCrash
+      ? `codex-cli: recovering crashed procedure in thread ${options.thread}\n`
+      : `codex-cli: rejoining saved thread ${options.thread} after broker restart\n`);
   } else if (!options.new && !options.threadExplicit && (
     savedState.transport !== "broker" ||
     !savedState.brokerInstanceId ||
@@ -2689,7 +2693,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
       sendBrokerMessage(socket, {
         type: "run",
         new: options.new,
-        autoNewOnStale: !options.threadExplicit && !options.recoverCrash,
+        autoNewOnStale: !options.threadExplicit && !options.recoverCrash && !options.rejoinSavedThread,
         resumeActiveTurn: !options.threadExplicit && (savedState.lastPrompt === prompt || !savedState.lastPrompt),
         debug: options.debug,
         agenticErrorCode: options.agenticErrorCode,

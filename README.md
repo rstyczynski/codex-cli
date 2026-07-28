@@ -140,9 +140,11 @@ If the app-server dies while a broker turn is active, `codex-cli` writes
 `.codex-cli/procedure-crash.json` and an append-only
 `.codex-cli/procedure-transcript.jsonl` beside the saved thread state. The
 terminal error names the crashed thread and prints the exact `--thread` recovery
-command. After restarting the broker, an unresolved crash automatically resumes
-that former thread; if the app-server cannot resume it, the CLI keeps the
-transcript and stops instead of starting a replacement conversation.
+command. After any broker restart, `codex-cli` rejoins the thread saved in
+`.codex-cli/codex-cli.json`; an unresolved crash record adds its durable
+diagnostics to that recovery. If the app-server cannot resume the saved thread,
+the CLI keeps the transcript and stops instead of starting a replacement
+conversation.
 
 Stop the workspace broker when it is no longer needed. The example stops only
 the broker instance that it started.

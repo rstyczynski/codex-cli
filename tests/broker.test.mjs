@@ -247,11 +247,13 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /broker stopped/);
 
-  result = invoke(workspace, "--broker", "start");
+  result = invokeWithEnv(workspace, { FAKE_CODEX_RESUME_THREADS: "1" }, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
   result = invoke(workspace, "--broker", "--prompt", "stale continuation");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /reply 1: stale continuation/);
+  assert.match(result.stderr, /rejoining saved thread thread-4 after broker restart/);
+  assert.doesNotMatch(result.stderr, /started thread/);
   const restartedState = JSON.parse(await readFile(path.join(workspace, ".codex-cli/codex-cli.json"), "utf8"));
   assert.notEqual(restartedState.brokerInstanceId, firstBrokerInstanceId);
   const stoppedRun = invokeAsync(workspace, "--broker", "--new", "--timeout", "5", "--prompt", "slow stop target");
