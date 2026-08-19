@@ -134,7 +134,7 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
 
   let result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /codex-cli v1\.0\.12 — ready/);
+  assert.match(result.stderr, /codex-cli v1\.0\.13 — ready/);
   assert.match(result.stderr, /broker started/);
   assert.equal((await stat(path.join(workspace, "broker.sock"))).mode & 0o777, 0o600);
 
@@ -188,6 +188,11 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /\[decline\]/);
   assert.match(result.stderr, /approval requested for unknown; decline/);
+  result = invoke(workspace, "--broker", "--prompt", "elicitation request");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /elicitation request \[decline\]/);
+  const elicitationResponse = (await readFile(path.join(workspace, "fake-codex-trace.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line)).findLast((message) => message.result?.action === "decline");
+  assert.deepEqual(elicitationResponse?.result, { action: "decline" });
   const expandedLog = await readFile(path.join(workspace, "approvals.toml"), "utf8");
   assert.match(expandedLog, /decision = "accept"/);
   assert.match(expandedLog, /decision = "decline"/);
@@ -491,6 +496,19 @@ test("broker survives app-server diagnostics emitted after readiness", async (t)
   assert.match(await readFile(path.join(workspace, "broker.pid.stderr.log"), "utf8"), new RegExp(marker));
   result = invoke(workspace, "--broker", "status");
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("broker identifies an incompatible upstream model cache in retained diagnostics", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx cache diag "));
+  t.after(() => invoke(workspace, "--broker", "stop"));
+  const diagnostic = "ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `base_instructions` at line 98 column 5";
+  let result = invokeWithEnv(workspace, { FAKE_CODEX_POST_READY_STDERR: diagnostic }, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "crash app server");
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /broker diagnostics:.*missing field `base_instructions`/s);
+  assert.match(result.stderr, /Codex has an incompatible model cache\. Quit Codex, then rename ~\/\.codex\/models_cache\.json and restart the broker\./);
 });
 
 test("broker automatically recovers an implicit vanished saved thread", async (t) => {

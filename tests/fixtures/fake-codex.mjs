@@ -75,7 +75,7 @@ input.on("line", (line) => {
     const pending = approvals.get(message.id);
     if (pending) {
       approvals.delete(message.id);
-      const answer = pending.kind === "user-input" ? message.result?.answers?.choice?.answers?.[0] : message.result?.decision;
+      const answer = pending.kind === "user-input" ? message.result?.answers?.choice?.answers?.[0] : pending.kind === "elicitation" ? message.result?.action : message.result?.decision;
       setTimeout(() => complete(pending.thread, pending.turn, pending.prompt, answer), 5);
     }
     return;
@@ -222,14 +222,14 @@ input.on("line", (line) => {
         setTimeout(() => process.exit(7), 10);
       }, 5);
     }
-    if (prompt.includes("crash")) return setTimeout(() => {
-      process.stderr.write("fake app-server crash diagnostic\n");
-      process.exit(7);
-    }, 5);
     if (process.env.FAKE_CODEX_POST_READY_STDERR && !globalThis.postReadyDiagnosticWritten) {
       globalThis.postReadyDiagnosticWritten = true;
       process.stderr.write(`${process.env.FAKE_CODEX_POST_READY_STDERR}\n`);
     }
+    if (prompt.includes("crash")) return setTimeout(() => {
+      process.stderr.write("fake app-server crash diagnostic\n");
+      process.exit(7);
+    }, 5);
     if (prompt.includes("interrupted reason")) return setTimeout(() => {
       turn.status = "interrupted";
       turn.error = { message: "simulated interruption", additionalDetails: "simulated diagnostic detail" };
@@ -248,6 +248,10 @@ input.on("line", (line) => {
       const requestId = `unknown-${turn.id}`;
       approvals.set(requestId, { thread, turn, prompt });
       setTimeout(() => send({ id: requestId, method: "item/unknown/requestPermission", params: { threadId: thread.id, turnId: turn.id, command: "unknown" } }), 5);
+    } else if (prompt.includes("elicitation request")) {
+      const requestId = `elicitation-${turn.id}`;
+      approvals.set(requestId, { kind: "elicitation", thread, turn, prompt });
+      setTimeout(() => send({ id: requestId, method: "mcpServer/elicitation/request", params: { threadId: thread.id, turnId: turn.id, message: "Provide a value" } }), 5);
     } else if (prompt.includes("file approval")) {
       const approvalId = `file-approval-${turn.id}`;
       approvals.set(approvalId, { thread, turn, prompt });

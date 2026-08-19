@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -72,7 +72,7 @@ test("CLI rejects invalid options and incompatible modes", async () => {
 test("CLI version exits successfully without requiring a workspace or Codex", () => {
   const result = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8", timeout: 10000 });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "codex-cli 1.0.12\n");
+  assert.equal(result.stdout, "codex-cli 1.0.13\n");
   assert.equal(result.stderr, "");
 });
 
@@ -118,6 +118,35 @@ test("managed socket mode explains how to start a missing daemon", async () => {
   const result = invoke(workspace, ["--new", "prompt"], { env: { CODEX_HOME: codexHome } });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /Start the managed server with: codex app-server daemon start/);
+});
+
+test("a plain follow-up reuses the saved broker transport", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp("/tmp/cdx-cli-persisted-broker-");
+  t.after(() => invoke(workspace, ["--broker", "stop"]));
+
+  let result = invoke(workspace, ["--broker", "start"]);
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, ["--broker", "--new", "first broker prompt"]);
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, ["second broker prompt"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 2: second broker prompt/);
+});
+
+test("managed socket mode explains how to recover from a stale refused daemon socket", async () => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli refused daemon "));
+  const codexHome = await mkdtemp("/tmp/cdxhome-");
+  const controlDirectory = path.join(codexHome, "app-server-control");
+  await mkdir(controlDirectory);
+  await writeFile(path.join(controlDirectory, "app-server-control.sock"), "stale socket placeholder", "utf8");
+
+  const result = invoke(workspace, ["--new", "prompt"], { env: { CODEX_HOME: codexHome } });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /managed app-server socket refused the connection/);
+  assert.match(result.stderr, /codex-cli --broker start/);
+  assert.match(result.stderr, /rerun with --broker/);
 });
 
 test("Windows directs users away from the unavailable managed Unix socket", async () => {
@@ -290,6 +319,13 @@ test("direct mode covers approvals, JSON requests, failures, and timeouts", asyn
   assert.equal(result.status, 0, result.stderr);
   const events = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.ok(events.some((event) => event.method === "item/unknown/requestPermission"));
+
+  const trace = path.join(workspace, "elicitation-trace.jsonl");
+  result = invoke(workspace, ["--direct", "--new", "elicitation request"], { env: { FAKE_CODEX_TRACE: trace } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /elicitation request \[decline\]/);
+  const requestResponse = (await readFile(trace, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((message) => message.result?.action === "decline");
+  assert.deepEqual(requestResponse?.result, { action: "decline" });
 
   result = invoke(workspace, ["--direct", "--new", "interrupted reason"]);
   assert.equal(result.status, 130, result.stderr);

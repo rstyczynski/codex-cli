@@ -187,7 +187,8 @@ starting a fresh thread.
 
 Approval requests default to `decline` so automation does not accidentally
 authorize a command or file change. Every app-server request whose method ends
-in `/requestApproval` uses the chosen policy; unsupported non-approval requests
+in `/requestApproval` uses the chosen policy; MCP elicitation requests receive
+the protocol-specific decline response, and unsupported non-approval requests
 remain denied. The example demonstrates an approval audit log and, when a
 terminal is attached, structured user input. It uses `hiai` without an explicit
 `--broker`, validating the broker-first launcher, and `sudo -n` so the command
@@ -551,6 +552,12 @@ exposed by an app-server to the example:
 ```bash
 ./examples/existing-socket.sh /path/to/app-server.sock
 ```
+
+If the default managed socket exists but refuses a connection, its daemon has
+stopped and left a stale socket behind. Use the primary broker transport:
+`codex-cli --broker start`, then rerun with `--broker`. A workspace whose saved
+thread state was created by the broker selects that transport automatically for
+a plain follow-up prompt.
 
 On Windows, managed daemon control sockets are unavailable. Use broker or
 direct mode, or pass a named pipe explicitly when another compatible

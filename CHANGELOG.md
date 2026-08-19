@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.13
+
+- Recognize retained broker diagnostics for an incompatible upstream Codex
+  model cache and provide a concise cache-rebuild recovery instruction without
+  mutating global Codex state.
+
+- Decline MCP elicitation requests with the protocol-required
+  `{ "action": "decline" }` response across direct and broker transports,
+  rather than treating them as command-approval requests.
+
 ## 1.0.12
 
 - Preserve an append-only workspace procedure transcript and a crash record for

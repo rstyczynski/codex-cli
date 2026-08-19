@@ -26,6 +26,9 @@
   - [CDX-7 Install and Release Polish](#cdx-7-install-and-release-polish)
   - [CDX-8 Documentation Tightening](#cdx-8-documentation-tightening)
   - [CDX-16 Transport-Wide Interactive Approval Coverage](#cdx-16-transport-wide-interactive-approval-coverage)
+  - [CDX-21 Upstream Model-Cache Incompatibility Recovery](#cdx-21-upstream-model-cache-incompatibility-recovery)
+  - [CDX-22 App-Server Compatibility Guard](#cdx-22-app-server-compatibility-guard)
+  - [CDX-23 Configured Prompt Extensions](#cdx-23-configured-prompt-extensions)
 
 ## Current State
 
@@ -282,6 +285,64 @@ Remaining work:
 - Verify that interactive handling answers Codex protocol requests only and
   never forwards terminal input to child commands.
 - Document any platform-specific PTY limitations or test skips explicitly.
+
+### CDX-21 Upstream Model-Cache Incompatibility Recovery
+
+Status: mitigated locally; upstream bug remains open.
+
+Observed behavior: an older `~/.codex/models_cache.json` lacking mandatory
+model metadata such as `base_instructions` causes the upstream
+`codex_models_manager` to log repeated TTL-refresh and cache-load errors. The
+app-server does not automatically discard the invalid snapshot and refetch it.
+
+Remaining work:
+
+- Track the upstream `models-manager` fix that deserializes legacy model
+  records or invalidates incompatible cache files.
+- Keep the regression fixture for the known diagnostic and the local recovery
+  guidance: stop Codex, rename/remove `~/.codex/models_cache.json`, and
+  restart.
+- Keep automatic cache deletion opt-in; the client must not mutate global
+  Codex state without explicit user authorization.
+
+### CDX-22 App-Server Compatibility Guard
+
+Status: open.
+
+Prevent upstream `codex app-server` interface and runtime changes from
+becoming ambiguous broker failures.
+
+Remaining work:
+
+- Capture `codex --version` when starting a broker and retain it in broker
+  metadata; restart rather than reuse a broker after the binary changes.
+- Define and test a supported upstream-version policy, with a clear warning
+  for untested versions rather than an unsupported claim of compatibility.
+- Continue capability/config-requirement negotiation before optional behavior,
+  and add coverage for unavailable or changed capabilities.
+- Classify known fatal child diagnostics during startup and return a stable
+  error code and remediation, while retaining the stderr tail for diagnosis.
+
+### CDX-23 Configured Prompt Extensions
+
+Status: open.
+
+Support an explicit `promptExtension` field in `.codex-cli/config.json` for
+stable, reusable instructions appended to each user-supplied prompt. The
+existing `prompt` field must remain unsupported in configuration so a
+repository configuration cannot silently replace the caller's task.
+
+Remaining work:
+
+- Define the JSON shape, precedence, ordering, and exact prompt-boundary
+  formatting for `promptExtension`.
+- Make the extension visible through `--show-config`, `--debug`, and the
+  existing source/risk reporting; warn when it is auto-discovered from a Git
+  or directory configuration file.
+- Apply it identically in direct, broker, and existing-socket transports,
+  including timed-out-turn reattachment matching and agentic-result contracts.
+- Add configuration-validation, precedence, transport-parity, and output
+  redaction tests; document how users can disable or override it per command.
 
 ### CDX-20 Interim Reporting Polish
 

@@ -75,7 +75,7 @@ Examples:
 const AGENTIC_SYSTEM_ERROR_EXIT_CODE = 70;
 const AGENTIC_CONTRACT_ERROR_EXIT_CODE = 72;
 const AGENTIC_RESERVED_EXIT_CODES = new Set([13]);
-const CLI_VERSION = "1.0.12";
+const CLI_VERSION = "1.0.13";
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_HELPER_OUTPUT_BYTES = 20 * 1024 * 1024;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -1719,6 +1719,19 @@ function isApprovalRequest(request) {
   return typeof request.method === "string" && request.method.endsWith("/requestApproval");
 }
 
+function isElicitationRequest(request) {
+  // The app-server currently proxies MCP elicitation as
+  // `mcpServer/elicitation/request`; accept the MCP wire name too so this
+  // remains safe if the proxy stops rewriting it.
+  return request.method === "mcpServer/elicitation/request" || request.method === "elicitation/create";
+}
+
+function declinedServerRequestResult(request) {
+  // Server-request methods do not share one response schema. In particular,
+  // MCP elicitation expects `{ action: "decline" }`, not an approval decision.
+  return isElicitationRequest(request) ? { action: "decline" } : { decision: "decline" };
+}
+
 async function userInputResult(options, request) {
   if (!options.interactive) throw new Error("Codex requested user input; rerun with --interactive to answer it in the terminal");
   if (!stdin.isTTY) throw new Error("cannot answer Codex user input because standard input is not a terminal");
@@ -1745,7 +1758,7 @@ function serverRequestResult(options, request) {
   debug(options, `declining unsupported app-server request: ${request.method}`);
   if (options.json) stdout.write(`${JSON.stringify(request)}\n`);
   else stderr.write(`codex-cli: unsupported app-server request ${request.method}; decline\n`);
-  return { decision: "decline" };
+  return declinedServerRequestResult(request);
 }
 
 const BROKER_VERSION = 1;
@@ -1791,9 +1804,16 @@ async function brokerDiagnosticTail(pidPath) {
   }
 }
 
+const INCOMPATIBLE_MODEL_CACHE_DIAGNOSTIC = /(?:failed to (?:load models cache|renew cache TTL).*missing field [`'](?:base_instructions|supports_reasoning_summaries)[`']|missing field [`'](?:base_instructions|supports_reasoning_summaries)[`'])/i;
+
+function modelCacheRecoveryInstruction(diagnostics) {
+  if (!INCOMPATIBLE_MODEL_CACHE_DIAGNOSTIC.test(diagnostics)) return "";
+  return "\nCodex has an incompatible model cache. Quit Codex, then rename ~/.codex/models_cache.json and restart the broker.";
+}
+
 async function brokerErrorWithDiagnostics(message, pidPath) {
   const diagnostics = await brokerDiagnosticTail(pidPath);
-  return new Error(`${message}${diagnostics ? `\nbroker diagnostics:\n${diagnostics}` : ""}`);
+  return new Error(`${message}${diagnostics ? `\nbroker diagnostics:\n${diagnostics}` : ""}${modelCacheRecoveryInstruction(diagnostics)}`);
 }
 
 function processIsAlive(pid) {
@@ -1933,7 +1953,7 @@ async function startBroker(options) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const detail = await brokerDiagnosticTail(pidPath);
-  throw new Error(`broker failed to become ready within ${startupTimeoutMs / 1000} seconds${detail ? `: ${detail}` : " (broker child provided no stderr)"}`);
+  throw new Error(`broker failed to become ready within ${startupTimeoutMs / 1000} seconds${detail ? `: ${detail}` : " (broker child provided no stderr)"}${modelCacheRecoveryInstruction(detail)}`);
 }
 
 async function statusBroker(options) {
@@ -2250,11 +2270,11 @@ async function serveBroker(options) {
         active.peer.send({ type: "user-input", requestId, questions: request.params.questions });
       });
     }
-    if (!active || request.params?.threadId !== active.threadId || request.params?.turnId !== active.turnId) return { decision: "decline" };
+    if (!active || request.params?.threadId !== active.threadId || request.params?.turnId !== active.turnId) return declinedServerRequestResult(request);
     if (!isApprovalRequest(request)) {
       if (active.request.json) active.peer.send({ type: "event", event: { method: "warning", params: { message: `unsupported app-server request ${request.method}; declined` } } });
       else active.peer.send({ type: "approval-handled", command: request.params?.command ?? request.method, reason: `unsupported app-server request ${request.method}`, decision: "decline" });
-      return { decision: "decline" };
+      return declinedServerRequestResult(request);
     }
     let decision;
     if (active.request.interactive) {
@@ -2834,7 +2854,21 @@ async function main() {
   if (options.brokerAction === "stop") { await stopBroker(options); return; }
   if (options.brokerAction === "threads") { await listBrokerThreads(options); return; }
   if (options.broker && (options.direct || options.socket || options.repl || options.startDaemon)) { fail("--broker cannot be combined with --direct, --socket, --repl, or --start-daemon"); return; }
-  const savedState = await readSavedState(options.state);
+  let savedState = await readSavedState(options.state);
+  // A workspace that was last used through the broker should keep using that
+  // transport when the caller supplies no transport selector. Otherwise a
+  // plain follow-up prompt falls back to Codex's managed control socket and
+  // can fail on a stale socket even though the workspace already has a broker.
+  if (!options.broker && !options.direct && !options.socket && !options.startDaemon && savedState.transport === "broker") {
+    options.broker = true;
+    options.brokerImplicit = true;
+    if (options.optionSources.cwd?.kind === "default") {
+      options.cwd = await resolveImplicitBrokerWorkspace(invocationCwd);
+      options.optionSources.cwd = { kind: "implicit-broker", path: options.cwd };
+      options.state = path.resolve(options.cwd, options.state);
+      savedState = await readSavedState(options.state);
+    }
+  }
   if (!options.thread && !options.new) {
     options.thread = savedState.threadId;
     if (options.thread) options.optionSources.thread = { kind: "state", path: options.state };
@@ -2879,7 +2913,11 @@ async function main() {
   } catch (error) { fail(error.message); return; }
 
   showWelcomeBanner(options);
-  if (options.broker) { await runBrokerClient(options, prompt, promptParts, savedState); return; }
+  if (options.broker) {
+    if (options.brokerImplicit) await startBroker(options);
+    await runBrokerClient(options, prompt, promptParts, savedState);
+    return;
+  }
 
   let currentPrompt = prompt;
   let currentPromptParts = promptParts;
@@ -3069,6 +3107,9 @@ async function main() {
     if (!options.socket && !options.direct && /ENOENT|no such file/i.test(error.message)) {
       throw new Error(`${error.message}. Start the managed server with: codex app-server daemon start`);
     }
+    if (!options.socket && !options.direct && (["ECONNREFUSED", "ENOTSOCK"].includes(error.code) || /ECONNREFUSED|ENOTSOCK/i.test(error.message))) {
+      throw new Error(`${error.message}. The managed app-server socket refused the connection, which usually means a stale socket is left behind after the daemon stopped. Use the primary broker transport instead: codex-cli --broker start; then rerun with --broker (or start the managed server with: codex app-server daemon start)`);
+    }
     throw error;
   } finally {
     await cleanupTemporaryAttachments([...temporaryAttachments]);
@@ -3085,4 +3126,4 @@ if (process.argv[1] && entryPath(fileURLToPath(import.meta.url)) === entryPath(p
   main().catch((error) => fail(error.message, error.exitCode));
 }
 
-export { JsonRpcClient, ProgressSpinner, StdioJsonRpcClient, approvalResult, classifyCodexError, createHumanRenderer, debug, finalAgentMessage, formatThreadItem, logApproval, parseAgenticResult, parseArgs, promptWithAgenticResultContract, resolveImplicitBrokerWorkspace, serverRequestResult, showWelcomeBanner, userInputResult };
+export { JsonRpcClient, ProgressSpinner, StdioJsonRpcClient, approvalResult, classifyCodexError, createHumanRenderer, debug, declinedServerRequestResult, finalAgentMessage, formatThreadItem, isElicitationRequest, logApproval, parseAgenticResult, parseArgs, promptWithAgenticResultContract, resolveImplicitBrokerWorkspace, serverRequestResult, showWelcomeBanner, userInputResult };
