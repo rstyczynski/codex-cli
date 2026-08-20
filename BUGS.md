@@ -82,9 +82,7 @@
   the full active and archived catalog only for a non-empty typed fragment,
   caches it for 30 seconds, keeps repeated label completion in one quoted
   argument, and preserves ID-prefix completion. A delayed spinner makes a
-  first slow search visible, with a ten-second upper bound; `--thread-label`
-  also returns deduplicated, Bash-quoted displayed labels without inserting
-  thread IDs.
+  first slow search visible, with a ten-second upper bound.
 
 - Fixed locally in v1.1.0: a value copied from the earlier backslash-escaping
   completion became a different literal selector when users later wrapped it
@@ -98,9 +96,9 @@
   its non-addressable status and parent thread when available.
 
 - Fixed locally in v1.1.0: the broker protocol did not advertise native
-  thread-label support, allowing a newer client to send `threadLabel` to an
+  native thread-name support, allowing a newer client to send its name field to an
   older broker that silently ignored it. The client now requires the broker's
-  thread-label capability and reports that the broker must be restarted when
+  thread-name capability and reports that the broker must be restarted when
   it is unavailable.
 
 - Fixed locally in v1.1.0: thread naming and switching could mutate state before
@@ -111,7 +109,7 @@
 
 - Fixed locally in v1.1.0: every broker failure appended the retained Codex
   stderr tail, even when it was unrelated to the immediate request (for
-  example, a failed thread-label lookup). Broker diagnostics are now hidden by
+  example, a failed thread-name lookup). Broker diagnostics are now hidden by
   default and shown only with `--diagnostics`.
 
 - Fixed locally in v1.1.0: broker-side `<thread_id>` expansion used the state

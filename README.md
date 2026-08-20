@@ -141,7 +141,7 @@ makes that thread the saved current conversation only after the turn completes.
 These rules are the same for command-line, environment, and JSON-configuration
 values, and in broker and socket transports. Both are strict: a missing or
 ambiguous explicit selector fails rather than creating or choosing a thread.
-`--thread-label LABEL` sets the native Codex name on the selected thread. It
+`--thread-set-name NAME` sets the native Codex name on the selected thread. It
 works with `--new`, `--thread`, `--thread-switch`, or the saved current thread.
 Native naming is broker-capability-gated; restart an older broker when the CLI
 reports that it does not support thread labels. The name is committed only
@@ -152,7 +152,7 @@ state. A switch or label is therefore committed before agentic-output
 validation: it remains committed when a valid result maps to a nonzero outcome
 or when a completed payload later fails contract validation. Failed,
 interrupted, or timed-out protocol turns do not commit it.
-When `--thread-switch` and `--thread-label` are combined, the completed turn
+When `--thread-switch` and `--thread-set-name` are combined, the completed turn
 commits the switch before the naming request. If naming then fails, the command
 reports that error but does not roll back the saved current thread.
 
@@ -224,7 +224,7 @@ crash message or stored in `.codex-cli/codex-cli.json`:
 ```bash
 hiai --thread THREAD_ID "Ask a one-off question in another conversation."
 hiai --thread-switch THREAD_ID "Continue this conversation from now on."
-hiai --new --thread-label "Sprint 18" "Start the sprint discussion."
+hiai --new --thread-set-name "Sprint 18" "Start the sprint discussion."
 hiai --thread "Sprint 18" "Ask a one-off question in the sprint discussion."
 ```
 
@@ -726,7 +726,7 @@ registered completion definitions:
 
 It registers the same completion for `codex-cli`, `cdx`, and `hiai`, covering
 options, broker actions, file arguments, approval modes, models, available
-broker threads, existing displayed labels suggested for `--thread-label`, and every
+broker threads, and every
 registered prompt-action token. Thread completion
 uses the command's implicit workspace and queries only an already-running
 compatible broker; pressing Tab never starts one. Start with a non-empty ID
@@ -740,10 +740,8 @@ An empty value deliberately does not offer every thread in a large catalog.
 A selector label completion is quoted so Bash passes it as one argument.
 Duplicate labels complete to their unambiguous IDs, and an ID-prefix completion
 remains an ID rather than being replaced with a possibly duplicated label.
-`--thread-label` suggests deduplicated displayed labels (native names or
-fallback previews) only—never IDs—while still allowing any new text. Its
-suggestions match the beginning of a label, avoiding boilerplate text from a
-long prompt turning a short prefix into hundreds of candidates.
+`--thread-set-name` accepts literal text only. It deliberately has no thread
+completion because setting a name is not a thread-selection operation.
 Codex sub-agent threads are omitted because they cannot accept a standalone
 prompt; an explicitly supplied sub-agent UUID is rejected with its parent ID
 when available.

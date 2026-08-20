@@ -13,7 +13,7 @@
   displayed label, unique UUID prefix, then unique displayed-label fragment—and
   recommend full UUIDs for automation.
 - Advertise and require broker support for native thread naming before applying
-  `--thread-label`, and delay label mutation until selector, capability, and
+  `--thread-set-name`, and delay name mutation until selector, capability, and
   active-turn validation has succeeded. Persist a completed `--thread-switch`
   before applying a combined label update, so a later naming failure does not
   discard the selected current thread.
@@ -23,15 +23,14 @@
   seconds, and show a delayed spinner during a bounded ten-second first lookup.
   Keep shared-prefix labels safe across repeated Tab presses as one quoted
   argument, preserve UUID-prefix completion, and suggest deduplicated, quoted
-  displayed labels for `--thread-label` without substituting IDs. Strip
-  codex-cli's internal agentic-result contract from fallback previews and use
-  label-prefix suggestions so common instruction text cannot flood completion.
+  displayed labels for thread selectors without substituting IDs. Strip
+  codex-cli's internal agentic-result contract from fallback previews.
 - Normalize legacy backslash-escaped thread values before lookup, so an older
   copied candidate still resolves its exact native label after being quoted.
 - Omit non-addressable Codex sub-agent threads from selector completion and
   explain parent-thread selection for an explicitly supplied sub-agent UUID.
 
-- Add `--thread-label LABEL` to set a native Codex thread name for a new,
+- Add `--thread-set-name NAME` to set a native Codex thread name for a new,
   one-off, switched, or saved-current broker thread. Thread selectors and Bash
   completion accept labels, label fragments, UUIDs, and UUID prefixes.
 

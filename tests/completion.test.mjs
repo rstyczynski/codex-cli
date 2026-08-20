@@ -82,7 +82,6 @@ test("generated Bash completion is valid and embeds safely quoted executable pat
   assert.match(generated.stdout, /^# Bash completion for codex-cli/m);
   assert.match(generated.stdout, /_codex_cli_complete/);
   assert.match(generated.stdout, /_codex_cli_quote_thread_label/);
-  assert.match(generated.stdout, /_codex_cli_thread_label_words/);
   assert.match(generated.stdout, /complete .*codex-cli cdx hiai/);
   assert.doesNotMatch(generated.stdout, /codex-cli codex-cli/, "completion target should only be registered once");
 
@@ -149,17 +148,6 @@ send -- "a\t marker\r"
 expect_exact {__ARGC__3}
 expect_exact {__ARG__--thread}
 expect_exact {__ARG__Sprint alpha}
-expect_exact {__ARG__marker}
-expect_prompt
-send -- {_codex_cli_thread_values(){ _CODEX_CLI_THREAD_CACHE=$'thread-p\tPolish project\t1\nthread-o\tPower review\t1'; }}
-send -- "\r"
-expect_prompt
-send -- "hiai --thread-label Po\t"
-after 100
-send -- "l\t marker\r"
-expect_exact {__ARGC__3}
-expect_exact {__ARG__--thread-label}
-expect_exact {__ARG__Polish project}
 expect_exact {__ARG__marker}
 expect_prompt
 send -- {_codex_cli_thread_values(){ _CODEX_CLI_THREAD_CACHE=$'thread-c\tunsafe O\'Brien;$(printf PWN)*\t1'; }}
@@ -346,7 +334,7 @@ test("generated hiai fallback selects broker agentic mode", () => {
 test("option-name completion covers every public flag and both Bash-completion spellings", () => {
   const expected = [
     "--socket", "--direct", "--broker", "--broker-socket", "--prompt", "--image", "--config", "--show-config", "--config-json",
-    "--thread-params", "--turn-params", "--thread", "--thread-switch", "--thread-label", "--new", "--state", "--current-thread", "--model",
+    "--thread-params", "--turn-params", "--thread", "--thread-switch", "--thread-set-name", "--new", "--state", "--current-thread", "--model",
     "--clear-model", "--start-daemon", "--cwd", "--timeout", "--approval", "--approval-log",
     "--experimental-api", "--interactive", "--repl", "--interrupt-pending", "--verbosity", "--progress", "--debug", "--diagnostics", "--agentic-error-code", "--json",
     "--stdin", "--codex", "--bash_completion", "--bash-completion", "--help", "-h", "--interim", "--version",
@@ -361,7 +349,7 @@ test("option-name completion covers every public flag and both Bash-completion s
   for (const command of ["cdx", "hiai"]) {
     const commandResult = completion([command, "--thr"]);
     assert.equal(commandResult.status, 0, commandResult.stderr);
-    assert.deepEqual(commandResult.replies, ["--thread-params", "--thread", "--thread-switch", "--thread-label"]);
+    assert.deepEqual(commandResult.replies, ["--thread-params", "--thread", "--thread-switch", "--thread-set-name"]);
   }
 
   const hiaiAction = completion(["hiai", "st"]);
@@ -413,7 +401,7 @@ test("thread completion reads available IDs from an existing broker", async (t) 
   result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--current-thread"]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), "thread-2", "one-off --thread must not replace current state");
-  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--thread-switch", "thread-1", "--thread-label", "Sprint 18", "switch current thread"]);
+  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--thread-switch", "thread-1", "--thread-set-name", "Sprint 18", "switch current thread"]);
   assert.equal(result.status, 0, result.stderr);
   result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--current-thread"]);
   assert.equal(result.status, 0, result.stderr);
@@ -433,25 +421,14 @@ test("thread completion reads available IDs from an existing broker", async (t) 
   completed = completion(["hiai", "--cwd", workspace, "--broker-socket", socketPath, "--thread-switch", "sprint"]);
   assert.equal(completed.status, 0, completed.stderr);
   assert.deepEqual(completed.replies, ["'Sprint 18'"]);
-  completed = completion(["codex-cli", "--cwd", workspace, "--broker-socket", socketPath, "--thread-label", "sprint"]);
+  completed = completion(["codex-cli", "--cwd", workspace, "--broker-socket", socketPath, "--thread-set-name", "sprint"]);
   assert.equal(completed.status, 0, completed.stderr);
-  assert.deepEqual(completed.replies, ["'Sprint 18'"], "--thread-label must suggest existing labels as safely quoted values");
-
-  const newLabelAfterSelectorCache = runBash([
-    `eval "$(${sourceCommand()})"`,
-    `COMP_WORDS=(${["codex-cli", "--cwd", workspace, "--broker-socket", socketPath, "--new", "--thread", "sprint"].map(shellQuote).join(" ")})`,
-    "COMP_CWORD=7; COMPREPLY=(); _codex_cli_complete",
-    `COMP_WORDS=(${["codex-cli", "--cwd", workspace, "--broker-socket", socketPath, "--new", "--thread-label", "sprint"].map(shellQuote).join(" ")})`,
-    "COMP_CWORD=7; COMPREPLY=(); _codex_cli_complete",
-    "printf '%s\\0' \"${COMPREPLY[@]}\"",
-  ].join("\n"));
-  assert.equal(newLabelAfterSelectorCache.status, 0, newLabelAfterSelectorCache.stderr);
-  assert.deepEqual(newLabelAfterSelectorCache.stdout.split("\0").filter(Boolean), ["'Sprint 18'"], "--new label completion must not reuse the selector-mode empty cache");
+  assert.deepEqual(completed.replies, [], "--thread-set-name must not complete existing thread labels");
   result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--thread", "Sprint 18", "select named thread"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /select named thread/);
 
-  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-label", "New sprint", "create named thread"]);
+  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-set-name", "New sprint", "create named thread"]);
   assert.equal(result.status, 0, result.stderr);
 
   completed = completion(["hiai", "--cwd", workspace, "--broker-socket", socketPath, "--thread", "another"]);
@@ -470,20 +447,17 @@ test("thread completion reads available IDs from an existing broker", async (t) 
   assert.equal(completed.status, 0, completed.stderr);
   assert.deepEqual(completed.replies, ["thread-3", "thread-2", "thread-1"], "a disconnected list client must not stop the broker");
 
-  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-label", "Duplicate label", "duplicate one"]);
+  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-set-name", "Duplicate label", "duplicate one"]);
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-label", "Duplicate label", "duplicate two"]);
+  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-set-name", "Duplicate label", "duplicate two"]);
   assert.equal(result.status, 0, result.stderr);
   completed = completion(["hiai", "--cwd", workspace, "--broker-socket", socketPath, "--thread", "duplicate"]);
   assert.equal(completed.status, 0, completed.stderr);
   assert.deepEqual(completed.replies, ["thread-5", "thread-4"], "duplicate labels must complete to unambiguous IDs");
-  completed = completion(["codex-cli", "--cwd", workspace, "--broker-socket", socketPath, "--thread-label", "duplicate"]);
-  assert.equal(completed.status, 0, completed.stderr);
-  assert.deepEqual(completed.replies, ["'Duplicate label'"], "label suggestions must deduplicate names instead of inserting thread IDs");
 
   const injectionMarker = `/tmp/cdxinj-${process.pid}-${Date.now()}`;
   const unsafeLabel = `unsafe;touch\${IFS}${injectionMarker}`;
-  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-label", unsafeLabel, "shell-safe label"]);
+  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-set-name", unsafeLabel, "shell-safe label"]);
   assert.equal(result.status, 0, result.stderr);
   completed = completion(["hiai", "--cwd", workspace, "--broker-socket", socketPath, "--thread", "unsafe"]);
   assert.equal(completed.status, 0, completed.stderr);
@@ -502,14 +476,14 @@ test("thread completion reads available IDs from an existing broker", async (t) 
   await assert.rejects(access(injectionMarker), { code: "ENOENT" });
 
   const apostropheLabel = "O'Brien";
-  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-label", apostropheLabel, "apostrophe label"]);
+  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-set-name", apostropheLabel, "apostrophe label"]);
   assert.equal(result.status, 0, result.stderr);
   completed = completion(["hiai", "--cwd", workspace, "--broker-socket", socketPath, "--thread", "Brien"]);
   assert.equal(completed.status, 0, completed.stderr);
   assert.deepEqual(completed.replies, [shellQuote(apostropheLabel)]);
 
   const longLabel = `${"long-".repeat(24)}distinctive-tail`;
-  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-label", longLabel, "long label"]);
+  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-set-name", longLabel, "long label"]);
   assert.equal(result.status, 0, result.stderr);
   completed = completion(["hiai", "--cwd", workspace, "--broker-socket", socketPath, "--thread", "distinctive-tail"]);
   assert.equal(completed.status, 0, completed.stderr);
@@ -522,30 +496,6 @@ test("thread completion reads available IDs from an existing broker", async (t) 
   ].join("\n"));
   assert.equal(unlabeled.status, 0, unlabeled.stderr);
   assert.deepEqual(unlabeled.stdout.split("\0").filter(Boolean), ["thread-unlabeled"]);
-
-  const labelOnly = runBash([
-    `eval "$(${sourceCommand()})"`,
-    `_codex_cli_thread_label_words ${shellQuote("thread-1\tPolish project\t1\nthread-2\tPolish project\t0\nthread-3\t\t0\nthread-4\t019a0000-0000-0000-0000-000000000000\t1")} ''`,
-    "printf '%s\\0' \"${COMPREPLY[@]}\"",
-  ].join("\n"));
-  assert.equal(labelOnly.status, 0, labelOnly.stderr);
-  assert.deepEqual(labelOnly.stdout.split("\0").filter(Boolean), ["'Polish project'", "'019a0000-0000-0000-0000-000000000000'"], "label completion must omit IDs and unlabeled rows while retaining UUID-shaped label text");
-
-  const labelPrefix = runBash([
-    `eval "$(${sourceCommand()})"`,
-    `_codex_cli_thread_label_words ${shellQuote("thread-1\tPolish project\t1\nthread-2\tArchived Polish project\t1")} pol`,
-    "printf '%s\\0' \"${COMPREPLY[@]}\"",
-  ].join("\n"));
-  assert.equal(labelPrefix.status, 0, labelPrefix.stderr);
-  assert.deepEqual(labelPrefix.stdout.split("\0").filter(Boolean), ["'Polish project'"], "label completion must prefer a label prefix over a broad substring match");
-
-  const unsafeOpenDoubleLabel = runBash([
-    `eval "$(${sourceCommand()})"`,
-    `_codex_cli_thread_label_words ${shellQuote("thread-h\tunsafe !!\t1")} ${shellQuote('"unsafe')}`,
-    "printf '%s\\0' \"${COMPREPLY[@]}\"",
-  ].join("\n"));
-  assert.equal(unsafeOpenDoubleLabel.status, 0, unsafeOpenDoubleLabel.stderr);
-  assert.deepEqual(unsafeOpenDoubleLabel.stdout.split("\0").filter(Boolean), [], "an open double quote must not turn history-expanding label text into a different value");
 
   const exactId = runBash([
     `source <(${sourceCommand()})`,
@@ -591,7 +541,7 @@ test("implicit thread completion uses the Git-root broker from a repository subd
   t.after(() => invoke(["--cwd", workspace, "--broker-socket", brokerSocket, "--codex", fakeCodex, "--broker", "stop"], { env }));
   let result = invoke(["--cwd", workspace, "--broker-socket", brokerSocket, "--codex", fakeCodex, "--broker", "start"], { env });
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(["--cwd", workspace, "--broker-socket", brokerSocket, "--codex", fakeCodex, "--broker", "--new", "--thread-label", "Root conversation", "root thread"], { env });
+  result = invoke(["--cwd", workspace, "--broker-socket", brokerSocket, "--codex", fakeCodex, "--broker", "--new", "--thread-set-name", "Root conversation", "root thread"], { env });
   assert.equal(result.status, 0, result.stderr);
 
   const completed = completion(["hiai", "--broker-socket", brokerSocket, "--thread", "root"], { cwd: nested, env });
@@ -615,7 +565,7 @@ test("thread completion forwards explicit configuration and final transport-mode
 
   let result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "start"]);
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-label", "Configured conversation", "configured thread"]);
+  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-set-name", "Configured conversation", "configured thread"]);
   assert.equal(result.status, 0, result.stderr);
 
   let completed = completion(["codex-cli", "--config", configPath, "--thread", "configured"]);
@@ -714,7 +664,7 @@ test("broker completion filters and caches the complete thread catalog", async (
   assert.equal(completed.status, 0, completed.stderr);
   assert.deepEqual(completed.replies, ["'Control [31m label safe'"]);
 
-  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-label", "Fresh completion label", "fresh thread"], { env });
+  result = invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "--new", "--thread-set-name", "Fresh completion label", "fresh thread"], { env });
   assert.equal(result.status, 0, result.stderr);
   completed = completion(["hiai", "--cwd", workspace, "--broker-socket", socketPath, "--thread", "fresh completion"], { env });
   assert.equal(completed.status, 0, completed.stderr);
@@ -752,7 +702,7 @@ test("thread-family completion searches a thousand-thread catalog with a longer 
   const requests = (await readFile(trace, "utf8")).trim().split("\n").map(JSON.parse);
   assert.equal(requests.filter((request) => request.method === "thread/list").length, 12, "completion must scan active and archived pages once, then reuse the broker cache");
 
-  for (const option of ["--thread", "--thread-switch", "--thread-label"]) {
+  for (const option of ["--thread", "--thread-switch"]) {
     const completed = completion(["codex-cli", "--cwd", workspace, "--broker-socket", socketPath, option, "poli"], { env });
     assert.equal(completed.status, 0, completed.stderr);
     assert.deepEqual(completed.replies, ["'Polish completion target'"], option);
@@ -815,7 +765,7 @@ test("enumerated values and broker option context complete precisely", () => {
     { words: ["codex-cli", "--show-config", "--con"], expected: ["--config", "--config-json"] },
     { words: ["codex-cli", "--broker", "s"], expected: ["start", "status", "stop"] },
     { words: ["codex-cli", "--broker", "t"], expected: ["threads", "true"] },
-    { words: ["codex-cli", "--broker", "--thr"], expected: ["--thread-params", "--thread", "--thread-switch", "--thread-label"] },
+    { words: ["codex-cli", "--broker", "--thr"], expected: ["--thread-params", "--thread", "--thread-switch", "--thread-set-name"] },
     { words: ["codex-cli", "--broker", "start", "--cle"], expected: ["--clear-model"] },
   ];
 

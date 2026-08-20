@@ -324,7 +324,7 @@ Name Codex threads from the CLI and use those names as convenient selectors.
 
 Delivered:
 
-- `--thread-label LABEL` calls Codex's native thread-name API for `--new`,
+- `--thread-set-name NAME` calls Codex's native thread-name API for `--new`,
   `--thread`, `--thread-switch`, or the saved current broker thread.
 - `--thread` remains one-off; `--thread-switch` still persists the selected
   thread. Both accept UUIDs, UUID prefixes, labels, and label fragments.
@@ -388,8 +388,8 @@ Delivered:
 - The first lookup is bounded to ten seconds and displays `Searching Codex
   threads…` after 0.2 seconds, rather than failing silently at an arbitrary
   one-second cutoff.
-- `--thread-label` suggests deduplicated displayed labels, including with
-  `--new`, without ever substituting a thread ID for the requested new name.
+- `--thread-set-name` accepts a literal new name and deliberately does not
+  complete thread labels, because naming is not thread selection.
 - A real Bash/Readline PTY regression executes repeated shared-prefix
   completion and a metacharacter-heavy label, verifying one selector argument
   and no filename fallback. Integration coverage also checks workspace

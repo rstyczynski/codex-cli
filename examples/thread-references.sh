@@ -55,7 +55,7 @@ fi
 #   codex-cli --broker --thread "$one_off_target_id" 'Ask one question in that thread.'
 # A persistent target changes the saved current thread only after its prompt
 # completes:
-#   codex-cli --broker --thread-switch "$one_off_target_id" --thread-label 'Sprint 18' 'Continue this thread from now on.'
+#   codex-cli --broker --thread-switch "$one_off_target_id" --thread-set-name 'Sprint 18' 'Continue this thread from now on.'
 # A native label is also a selector; completion matches names and ID prefixes:
 #   codex-cli --broker --thread 'Sprint 18' 'Ask one question in that named thread.'
 # A label is selection metadata; it does not validate the conversation's

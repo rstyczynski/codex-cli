@@ -139,7 +139,7 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   assert.match(result.stderr, /broker started/);
   assert.equal((await stat(path.join(workspace, "broker.sock"))).mode & 0o777, 0o600);
 
-  result = invoke(workspace, "--broker", "--approval", "accept", "--approval-log", "approvals.toml", "--thread-label", longThreadTitle, "--prompt", "first");
+  result = invoke(workspace, "--broker", "--approval", "accept", "--approval-log", "approvals.toml", "--thread-set-name", longThreadTitle, "--prompt", "first");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /reply 1: first/);
   assert.match(result.stderr, /started thread thread-1/);
@@ -311,7 +311,7 @@ test("new current-thread creates and saves an empty broker thread without a turn
   assert.equal(result.status, 0, result.stderr);
   result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(workspace, "--broker", "--thread-label", "Persisted after restart", "status");
+  result = invoke(workspace, "--broker", "--thread-set-name", "Persisted after restart", "status");
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stderr, /rejoining saved thread/);
   assert.match(result.stdout, /reply 1: status/);
@@ -617,9 +617,9 @@ test("broker resolves thread labels deterministically and reports stable selecto
   let result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
 
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "Exact target", "seed exact thread");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "Exact target", "seed exact thread");
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "Other target", "Discuss Exact target notes");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "Other target", "Discuss Exact target notes");
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
 
@@ -665,25 +665,25 @@ test("broker resolves thread labels deterministically and reports stable selecto
   assert.equal(result.status, 65, result.stderr);
   assert.match(result.stderr, /ambiguous/i);
 
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "thread-404", "non-UUID-shaped label");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "thread-404", "non-UUID-shaped label");
   assert.equal(result.status, 0, result.stderr);
   result = invoke(workspace, "--broker", "--thread", "thread-404", "select non-UUID-shaped label");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /select non-UUID-shaped label/);
 
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "Duplicate label", "first duplicate");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "Duplicate label", "first duplicate");
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "Duplicate label", "second duplicate");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "Duplicate label", "second duplicate");
   assert.equal(result.status, 0, result.stderr);
   result = invoke(workspace, "--broker", "--thread", "Duplicate label", "ambiguous exact label");
   assert.equal(result.status, 65, result.stderr);
   assert.match(result.stderr, /ambiguous/i);
 
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "Pole elektromagnetyczne, fotony i Y…", "canonical legacy-escape target");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "Pole elektromagnetyczne, fotony i Y…", "canonical legacy-escape target");
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "old shell output Pole\\ elektromagnetyczne\\,\\ fotony\\ i\\ Y…", "first legacy escape history");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "old shell output Pole\\ elektromagnetyczne\\,\\ fotony\\ i\\ Y…", "first legacy escape history");
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "old shell output Pole\\ elektromagnetyczne\\,\\ fotony\\ i\\ Y…", "second legacy escape history");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "old shell output Pole\\ elektromagnetyczne\\,\\ fotony\\ i\\ Y…", "second legacy escape history");
   assert.equal(result.status, 0, result.stderr);
   result = invoke(workspace, "--broker", "--thread", "Pole\\ elektromagnetyczne\\,\\ fotony\\ i\\ Y…", "legacy escaped selector resolves exact canonical name");
   assert.equal(result.status, 0, result.stderr);
@@ -701,9 +701,9 @@ test("thread selectors from configuration and environment retain one-off and swi
   let result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
 
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "Configuration target", "configuration target seed");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "Configuration target", "configuration target seed");
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "Saved target", "saved target seed");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "Saved target", "saved target seed");
   assert.equal(result.status, 0, result.stderr);
   await writeFile(oneOffConfig, JSON.stringify({ thread: "Configuration target" }), "utf8");
   await writeFile(switchConfig, JSON.stringify({ threadSwitch: "Configuration target" }), "utf8");
@@ -767,18 +767,18 @@ test("thread label failures preserve completed switch semantics", async (t) => {
   t.after(() => invoke(workspace, "--broker", "stop"));
   let result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "Stable label", "stable label seed");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "Stable label", "stable label seed");
   assert.equal(result.status, 0, result.stderr);
-  result = invoke(workspace, "--broker", "--new", "--thread-label", "Saved label", "saved label seed");
+  result = invoke(workspace, "--broker", "--new", "--thread-set-name", "Saved label", "saved label seed");
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
 
-  result = invoke(workspace, "--broker", "--thread-switch", "Stable label", "--thread-label", "Rejected label", "failed turn");
+  result = invoke(workspace, "--broker", "--thread-switch", "Stable label", "--thread-set-name", "Rejected label", "failed turn");
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /simulated turn failure/);
   assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2", "a failed turn must not persist its requested switch");
 
-  result = invoke(workspace, "--broker", "--thread-switch", "Stable label", "--thread-label", "Rejected label", "completed turn before label failure");
+  result = invoke(workspace, "--broker", "--thread-switch", "Stable label", "--thread-set-name", "Rejected label", "completed turn before label failure");
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /simulated thread label failure/);
   assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-1", "a completed turn must persist its switch before a later label failure");
@@ -941,14 +941,14 @@ test("thread selectors and labels reject brokers that lack their advertised capa
   assert.equal(runRequests, 0, "the client must reject an unsupported selector before submitting a turn");
 
   capabilities = [...capabilities, "thread-selectors-v1"];
-  result = await invokeAsync(workspace, "--broker", "--new", "--thread-label", "New label", "--prompt", "label capability").done;
+  result = await invokeAsync(workspace, "--broker", "--new", "--thread-set-name", "New label", "--prompt", "label capability").done;
   assert.equal(result.status, 2, result.stderr);
-  assert.match(result.stderr, /running broker does not support --thread-label/);
+  assert.match(result.stderr, /running broker does not support --thread-set-name/);
   assert.match(result.stderr, /broker stop.*broker start/);
   assert.equal(runRequests, 0, "the client must reject an unsupported label before submitting a turn");
 
   capabilities = [...capabilities, "thread-label-v1"];
-  result = await invokeAsync(workspace, "--broker", "--thread-switch", "Some label", "--thread-label", "New label", "--prompt", "atomic switch capability").done;
+  result = await invokeAsync(workspace, "--broker", "--thread-switch", "Some label", "--thread-set-name", "New label", "--prompt", "atomic switch capability").done;
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /cannot preserve a completed --thread-switch across a label failure/);
   assert.match(result.stderr, /broker stop.*broker start/);

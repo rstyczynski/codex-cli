@@ -83,7 +83,7 @@ test("hiai enables agentic exits and accepts broker approval requests end to end
   assert.match(result.stderr, /broker started/);
 
   result = invokeHiai(workspace, [
-    "--new", "--thread-label", "Hiai current thread", "--approval", "accept-for-session", "agentic achieved approve through hiai",
+    "--new", "--thread-set-name", "Hiai current thread", "--approval", "accept-for-session", "agentic achieved approve through hiai",
   ]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "goal complete\n");
