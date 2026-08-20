@@ -694,6 +694,32 @@ test("thread selectors from configuration and environment retain one-off and swi
   assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
 });
 
+test("broker completion hides sub-agent threads and rejects their explicit UUIDs", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker subagent selector "));
+  const subagentId = "019f0000-0000-7000-8000-000000000001";
+  const parentId = "019f0000-0000-7000-8000-000000000002";
+  const environment = {
+    FAKE_CODEX_THREADS_JSON: JSON.stringify([
+      { id: parentId, name: "Addressable parent", createdAt: 1 },
+      { id: subagentId, name: "Addressable-looking subagent", parentThreadId: parentId, source: { subAgent: { thread_spawn: { parent_thread_id: parentId } } }, createdAt: 2 },
+    ]),
+  };
+  t.after(() => invokeWithEnv(workspace, environment, "--broker", "stop"));
+  let result = invokeWithEnv(workspace, environment, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+
+  result = invokeWithEnv(workspace, environment, "--completion-threads", "--completion-thread-query", "addressable", "--timeout", "10");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(parentId));
+  assert.doesNotMatch(result.stdout, new RegExp(subagentId));
+
+  result = invokeWithEnv(workspace, environment, "--broker", "--thread", subagentId, "must fail before input");
+  assert.equal(result.status, 66, result.stderr);
+  assert.match(result.stderr, /sub-agent.*cannot accept a standalone prompt/i);
+  assert.match(result.stderr, new RegExp(parentId));
+});
+
 test("thread label failures preserve completed switch semantics", async (t) => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker deferred label "));

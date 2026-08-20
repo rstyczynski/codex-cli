@@ -92,6 +92,11 @@
   exact native thread name. Legacy shell escapes are now normalized before
   deterministic selector resolution.
 
+- Fixed locally in v1.1.0: completion could offer a multi-agent sub-agent UUID
+  that Codex refuses to receive direct input. Selector and completion catalogs
+  now omit sub-agents, and an explicitly supplied known sub-agent UUID reports
+  its non-addressable status and parent thread when available.
+
 - Fixed locally in v1.1.0: the broker protocol did not advertise native
   thread-label support, allowing a newer client to send `threadLabel` to an
   older broker that silently ignored it. The client now requires the broker's

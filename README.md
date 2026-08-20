@@ -714,6 +714,9 @@ Duplicate labels complete to their unambiguous IDs, and an ID-prefix completion
 remains an ID rather than being replaced with a possibly duplicated label.
 `--thread-label` suggests deduplicated displayed labels (native names or
 fallback previews) only—never IDs—while still allowing any new text.
+Codex sub-agent threads are omitted because they cannot accept a standalone
+prompt; an explicitly supplied sub-agent UUID is rejected with its parent ID
+when available.
 Legacy candidates produced by older completions, such as
 `Pole\ elektromagnetyczne\, fotony`, are normalized before lookup; new
 completion values are quoted rather than backslash-escaped.

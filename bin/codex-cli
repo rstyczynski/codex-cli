@@ -2263,6 +2263,17 @@ function threadListLabel(thread) {
   return threadSelectorLabel(thread);
 }
 
+function threadAcceptsStandalonePrompt(thread) {
+  return !thread?.parentThreadId && !(thread?.source && typeof thread.source === "object" && thread.source.subAgent);
+}
+
+function nonPromptableThreadError(thread) {
+  const parent = typeof thread?.parentThreadId === "string" && thread.parentThreadId
+    ? `; select its parent thread ${thread.parentThreadId} instead`
+    : "";
+  return threadSelectorError(`Codex thread ${thread.id} is a sub-agent and cannot accept a standalone prompt${parent}`, "THREAD_SELECTOR_SUBAGENT", THREAD_SELECTOR_NOT_FOUND_EXIT_CODE);
+}
+
 function uniqueThreads(threads) {
   return [...new Map(threads.filter((thread) => typeof thread?.id === "string" && thread.id).map((thread) => [thread.id, thread])).values()];
 }
@@ -2328,7 +2339,7 @@ async function resolveThreadSelector(client, selector) {
   const trimmedSelector = selector.trim();
   if (COMPLETE_THREAD_ID.test(trimmedSelector)) return trimmedSelector.toLowerCase();
   const normalizedSelector = normalizeThreadSelectorText(trimmedSelector).toLowerCase();
-  const threads = await fetchCodexThreads(client);
+  const threads = (await fetchCodexThreads(client)).filter(threadAcceptsStandalonePrompt);
   const selectUnique = (matches) => {
     const unique = uniqueThreads(matches);
     if (unique.length === 1) return unique[0].id;
@@ -2730,8 +2741,9 @@ async function serveBroker(options) {
     if (completionThreadCatalogCache?.expiresAt > Date.now()) return completionThreadCatalogCache.threads;
     if (!completionThreadCatalogPending) {
       const generation = completionThreadCatalogGeneration;
-      const pending = fetchCodexThreads(app, { includeArchived: true, sortDirection: "desc" }).then((allThreads) => {
+      const pending = fetchCodexThreads(app, { includeArchived: true, sortDirection: "desc" }).then((catalogThreads) => {
         if (generation !== completionThreadCatalogGeneration) return undefined;
+        const allThreads = catalogThreads.filter(threadAcceptsStandalonePrompt);
         const labelCounts = new Map();
         for (const thread of allThreads) {
           const normalized = threadSelectorLabel(thread).toLowerCase();
@@ -2825,6 +2837,7 @@ async function serveBroker(options) {
         const resumeParams = { threadId, cwd: workspace };
         if (Object.hasOwn(request, "model")) resumeParams.model = request.model;
         const response = await app.request("thread/resume", resumeParams);
+        if (!threadAcceptsStandalonePrompt(response.thread)) throw nonPromptableThreadError(response.thread);
         threadId = response.thread.id;
         knownThreads.add(threadId);
         run.threadId = threadId;
@@ -2895,6 +2908,7 @@ async function serveBroker(options) {
             await startThread();
           }
         }
+        if (response && !threadAcceptsStandalonePrompt(response.thread)) throw nonPromptableThreadError(response.thread);
         if (response && threadIsNotLoaded(response)) {
           if (!request.autoNewOnStale) await resumeSelectedThread();
           else {
@@ -2914,6 +2928,7 @@ async function serveBroker(options) {
           return resumeSelectedThread();
         }
       })();
+      if (before && !threadAcceptsStandalonePrompt(before.thread)) throw nonPromptableThreadError(before.thread);
       const pending = before?.thread.turns.filter((turn) => turn.status === "inProgress") ?? [];
       const requestInput = { prompt: request.prompt, images: request.images, actionDigests: resolvedInput.actionDigests };
       const matchingTurn = pending.find((turn) => {
@@ -3614,7 +3629,10 @@ async function main() {
         const resumeThread = () => {
           const resumeParams = { threadId, cwd: options.cwd };
           if (hasModelOverride(options)) resumeParams.model = options.clearModel ? null : options.model;
-          return client.request("thread/resume", resumeParams);
+          return client.request("thread/resume", resumeParams).then((response) => {
+            if (!threadAcceptsStandalonePrompt(response.thread)) throw nonPromptableThreadError(response.thread);
+            return response;
+          });
         };
         const resumeSelectedThread = async () => {
           try { return await resumeThread(); }
@@ -3630,6 +3648,7 @@ async function main() {
         catch {
           return resumeSelectedThread();
         }
+        if (!threadAcceptsStandalonePrompt(response.thread)) throw nonPromptableThreadError(response.thread);
         return threadIsNotLoaded(response) ? resumeSelectedThread() : response;
       };
       const beforeStart = await readOrResumeThread();

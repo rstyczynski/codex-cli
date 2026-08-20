@@ -666,6 +666,7 @@ test("broker completion filters and caches the complete thread catalog", async (
   seeds[51].preview = "hidden preview selector";
   seeds[50].name = "Control\u001b[31m label\u007f\u0085safe";
   seeds.push({ id: "retired-collision", name: "Archive collision", archived: true, createdAt: 1000, updatedAt: 1000 });
+  seeds.push({ id: "subagent-unique", name: "Unique recent", parentThreadId: "parent-thread", source: { subAgent: { thread_spawn: { parent_thread_id: "parent-thread" } } }, createdAt: 1001, updatedAt: 1001 });
   const env = { FAKE_CODEX_THREADS_JSON: JSON.stringify(seeds), FAKE_CODEX_TRACE: trace };
   t.after(() => invoke(["--cwd", workspace, "--broker-socket", socketPath, "--codex", fakeCodex, "--broker", "stop"], { env }));
 
