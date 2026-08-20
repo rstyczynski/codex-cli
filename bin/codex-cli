@@ -17,7 +17,7 @@ import { stdin, stdout, stderr } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
-const usage = `Usage: codex-cli (--thread ID | --new) [options] [PROMPT]
+const usage = `Usage: codex-cli [--thread SELECTOR | --thread-switch SELECTOR | --new] [options] [PROMPT]
 
 Send a prompt to a Codex app-server thread.
 
@@ -31,10 +31,14 @@ Options:
   --image PATH         Attach a PNG, JPEG, WebP, or GIF (repeatable; max 20 MiB each)
   --config PATH        Client configuration JSON file (repeatable)
   --show-config [MODE] Print values and sources: set (default) or all; then exit
+  --current-thread     Print the saved workspace thread ID; then exit
   --config-json PATH   JSON object of Codex config overrides for a new thread
   --thread-params JSON Thread/start parameters as a JSON object or @FILE (repeatable)
   --turn-params JSON   Turn/start parameters as a JSON object or @FILE (repeatable)
-  --thread ID          Existing Codex thread ID
+  --thread SELECTOR    Send one prompt to an existing thread without switching current state
+  --thread-switch SELECTOR
+                      Send one prompt and make the thread current after completion
+  --thread-label LABEL Set the native Codex name after completion (broker only)
   --new                Create a new thread in the managed app-server
   --state PATH         Thread-state file (default: .codex-cli/codex-cli.json)
   --model MODEL        Use and remember a Codex model for this workspace thread
@@ -53,10 +57,12 @@ Options:
   --progress            Show an event-driven spinner while waiting for visible output on a terminal (default: enabled)
   --interim [BOOLEAN]   Show interim Codex activity while a turn runs (default: enabled)
   --debug               Log app-server requests, events, and turn status to standard error
+  --diagnostics         Include retained broker stderr with broker failures
   --agentic-error-code  Map Codex's validated final result to process exit status 0-15
   --json               Emit raw JSON events and, when requested, the validated agentic result
   --stdin              Read the prompt from standard input
   --codex PATH         Codex executable to use when starting the daemon (default: codex)
+  --version            Show the codex-cli version
   -h, --help           Show this help
 
 Examples:
@@ -75,7 +81,7 @@ Examples:
 const AGENTIC_SYSTEM_ERROR_EXIT_CODE = 70;
 const AGENTIC_CONTRACT_ERROR_EXIT_CODE = 72;
 const AGENTIC_RESERVED_EXIT_CODES = new Set([13]);
-const CLI_VERSION = "1.0.13";
+const CLI_VERSION = "1.1.0";
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_HELPER_OUTPUT_BYTES = 20 * 1024 * 1024;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -83,6 +89,15 @@ const PACKAGED_CLIPBOARD_HELPER = fileURLToPath(new URL("./cpb-paste", import.me
 const CLIPBOARD_TEMP_PREFIX = "clipboard-";
 let agenticErrorCodeActive = false;
 const WINDOWS_NAMED_PIPE_PREFIX = "\\\\.\\pipe\\";
+
+stdout.on("error", (error) => {
+  if (error.code === "EPIPE") process.exit(process.exitCode ?? 0);
+  throw error;
+});
+stderr.on("error", (error) => {
+  if (error.code === "EPIPE") process.exit(process.exitCode || 2);
+  throw error;
+});
 
 function fail(message, exitCode = 2) {
   if (agenticErrorCodeActive && exitCode >= 0 && exitCode <= 15) exitCode = AGENTIC_SYSTEM_ERROR_EXIT_CODE;
@@ -117,8 +132,11 @@ const OPTION_DEFINITIONS = [
   { flags: ["--broker"], key: "broker", kind: "broker" }, { flags: ["--broker-serve"], key: "brokerServe", kind: "boolean", impliesBroker: true },
   { flags: ["--broker-socket"], key: "brokerSocket", kind: "value" }, { flags: ["--prompt"], key: "prompt", kind: "append" }, { flags: ["--image"], key: "images", kind: "append" },
   { flags: ["--config"], key: "configSources", kind: "config-file", environment: false }, { flags: ["--show-config"], key: "showConfig", kind: "show-config", environment: false },
+  { flags: ["--current-thread"], key: "currentThread", kind: "boolean", environment: false },
   { flags: ["--config-json"], key: "configJson", kind: "value" }, { flags: ["--thread-params"], key: "threadParamSources", kind: "append" },
   { flags: ["--turn-params"], key: "turnParamSources", kind: "append" }, { flags: ["--thread"], key: "thread", kind: "value", explicit: "threadExplicit" },
+  { flags: ["--thread-switch"], key: "threadSwitch", kind: "value", explicit: "threadSwitchExplicit" },
+  { flags: ["--thread-label"], key: "threadLabel", kind: "value", environment: false },
   { flags: ["--new"], key: "new", kind: "boolean" }, { flags: ["--state"], key: "state", kind: "value", explicit: "stateExplicit" },
   { flags: ["--model"], key: "model", kind: "value", explicit: "modelExplicit" }, { flags: ["--clear-model"], key: "clearModel", kind: "boolean" },
   { flags: ["--start-daemon"], key: "startDaemon", kind: "boolean" }, { flags: ["--cwd"], key: "cwd", kind: "value" },
@@ -127,11 +145,12 @@ const OPTION_DEFINITIONS = [
   { flags: ["--bash_completion", "--bash-completion"], key: "bashCompletion", kind: "boolean", environment: "BASH_COMPLETION" },
   { flags: ["--interactive"], key: "interactive", kind: "boolean" }, { flags: ["--repl"], key: "repl", kind: "boolean" },
   { flags: ["--interrupt-pending"], key: "interruptPending", kind: "boolean" }, { flags: ["--verbosity"], key: "verbosity", kind: "verbosity" },
-  { flags: ["--progress"], key: "progress", kind: "boolean" }, { flags: ["--interim"], key: "interim", kind: "boolean" }, { flags: ["--debug"], key: "debug", kind: "boolean" },
+  { flags: ["--progress"], key: "progress", kind: "boolean" }, { flags: ["--interim"], key: "interim", kind: "boolean" }, { flags: ["--debug"], key: "debug", kind: "boolean" }, { flags: ["--diagnostics"], key: "diagnostics", kind: "boolean" },
   { flags: ["--agentic-error-code"], key: "agenticErrorCode", kind: "boolean" },
   { flags: ["--json"], key: "json", kind: "boolean" }, { flags: ["--stdin"], key: "stdin", kind: "boolean" },
   { flags: ["--codex"], key: "codex", kind: "value" }, { flags: ["--completion-models"], key: "completionModels", kind: "boolean" },
   { flags: ["--completion-cached-models"], key: "completionCachedModels", kind: "boolean" },
+  { flags: ["--completion-threads"], key: "completionThreads", kind: "boolean" },
 ];
 const OPTION_BY_FLAG = new Map(OPTION_DEFINITIONS.flatMap((definition) => definition.flags.map((flag) => [flag, definition])));
 
@@ -144,6 +163,7 @@ const CONFIGURATION_FIELDS = [
   { key: "brokerSocket", definition: optionDefinition("--broker-socket"), risk: "warn", pathValue: true },
   { key: "configJson", definition: optionDefinition("--config-json"), risk: "safe", pathValue: true },
   { key: "thread", definition: optionDefinition("--thread"), risk: "safe" },
+  { key: "threadSwitch", definition: optionDefinition("--thread-switch"), risk: "safe" },
   { key: "new", definition: optionDefinition("--new"), risk: "safe" },
   { key: "state", definition: optionDefinition("--state"), risk: "safe", pathValue: true },
   { key: "model", definition: optionDefinition("--model"), risk: "safe" },
@@ -160,6 +180,7 @@ const CONFIGURATION_FIELDS = [
   { key: "progress", definition: optionDefinition("--progress"), risk: "safe" },
   { key: "interim", definition: optionDefinition("--interim"), risk: "safe" },
   { key: "debug", definition: optionDefinition("--debug"), risk: "safe" },
+  { key: "diagnostics", definition: optionDefinition("--diagnostics"), risk: "safe" },
   { key: "agenticErrorCode", definition: optionDefinition("--agentic-error-code"), risk: "safe" },
   { key: "json", definition: optionDefinition("--json"), risk: "safe" },
   { key: "codex", definition: optionDefinition("--codex"), risk: "warn" },
@@ -227,6 +248,19 @@ function setOptionSource(options, definition, source) {
 
 function assignOption(options, definition, value, source) {
   const label = optionLabel(definition, source);
+  if (definition.key === "thread") {
+    options.threadSwitch = undefined;
+    options.threadSwitchExplicit = false;
+    options.optionSources.threadSwitch = defaultSource();
+    options.new = false;
+    options.optionSources.new = defaultSource();
+  } else if (definition.key === "threadSwitch") {
+    options.thread = undefined;
+    options.threadExplicit = false;
+    options.optionSources.thread = defaultSource();
+    options.new = false;
+    options.optionSources.new = defaultSource();
+  }
   if (definition.kind === "boolean") {
     if (source.kind === "command") options[definition.key] = value === undefined ? true : booleanValue(value, label);
     else if (source.kind === "environment") options[definition.key] = booleanValue(value, label);
@@ -288,12 +322,32 @@ function assignOption(options, definition, value, source) {
     if (source.kind === "configuration" && typeof value !== "string") throw new Error(`${label} must be a string`);
     options[definition.key] = value;
   }
+  if (definition.key === "new" && options.new) {
+    options.thread = undefined;
+    options.threadExplicit = false;
+    options.optionSources.thread = defaultSource();
+    options.threadSwitch = undefined;
+    options.threadSwitchExplicit = false;
+    options.optionSources.threadSwitch = defaultSource();
+  }
   if (definition.impliesBroker && options[definition.key]) options.broker = true;
   if (!["append", "config-file"].includes(definition.kind)) setOptionSource(options, definition, source);
-  if (definition.explicit && source.kind === "command") options[definition.explicit] = true;
+  if (definition.explicit && (source.kind === "command" || ["thread", "threadSwitch"].includes(definition.key))) options[definition.explicit] = true;
 }
 
 function applyEnvironmentOverrides(options, environment = process.env) {
+  const threadEnvironment = environmentName(optionDefinition("--thread"));
+  const threadSwitchEnvironment = environmentName(optionDefinition("--thread-switch"));
+  const newEnvironment = environmentName(optionDefinition("--new"));
+  const threadValue = environmentValue(threadEnvironment, environment);
+  const threadSwitchValue = environmentValue(threadSwitchEnvironment, environment);
+  const newValue = environmentValue(newEnvironment, environment);
+  if (threadValue !== undefined && threadSwitchValue !== undefined) {
+    throw new Error(`${threadEnvironment} and ${threadSwitchEnvironment} cannot be combined`);
+  }
+  if (newValue !== undefined && booleanValue(newValue, newEnvironment) && (threadValue !== undefined || threadSwitchValue !== undefined)) {
+    throw new Error(`${newEnvironment} cannot be combined with ${threadValue !== undefined ? threadEnvironment : threadSwitchEnvironment}`);
+  }
   for (const definition of OPTION_DEFINITIONS) {
     if (definition.environment === false) continue;
     const value = environmentValue(environmentName(definition), environment);
@@ -302,7 +356,7 @@ function applyEnvironmentOverrides(options, environment = process.env) {
 }
 
 function createDefaultOptions(invocationCwd) {
-  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, progress: true, interim: true, debug: false, agenticErrorCode: false, version: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
+  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, threadSwitchExplicit: false, threadLabel: undefined, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, completionThreads: false, currentThread: false, progress: true, interim: true, debug: false, diagnostics: false, agenticErrorCode: false, version: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
   for (const field of CONFIGURATION_FIELDS) {
     if (field.definition) options.optionSources[field.definition.key] = defaultSource();
   }
@@ -319,8 +373,18 @@ function parseArgs(argv, options = createDefaultOptions(process.cwd())) {
       continue;
     }
     const source = { kind: "command", flag: argument };
+    if (["thread", "threadSwitch"].includes(definition.key)) {
+      if (options.commandThreadSelector && options.commandThreadSelector !== definition.key) throw new Error("--thread and --thread-switch cannot be combined");
+      if (options.commandNewRequested) throw new Error(`${argument} and --new cannot be used together`);
+      options.commandThreadSelector = definition.key;
+    }
     if (definition.kind === "boolean") {
       const value = isBooleanValue(argv[index + 1]) ? argv[++index] : undefined;
+      if (definition.key === "new") {
+        const enabled = value === undefined ? true : booleanValue(value, argument);
+        if (enabled && options.commandThreadSelector) throw new Error("--new and --thread or --thread-switch cannot be used together");
+        options.commandNewRequested = enabled;
+      }
       assignOption(options, definition, value, source);
     }
     else if (definition.kind === "broker") {
@@ -439,6 +503,12 @@ function mergeConfigurationParams(options, field, value, source) {
 
 function applyConfigurationObject(options, value, source) {
   if (!isJsonObject(value)) throw configurationError(source, "must contain a JSON object");
+  if (Object.hasOwn(value, "thread") && Object.hasOwn(value, "threadSwitch")) {
+    throw configurationError(source, "thread and threadSwitch cannot be combined");
+  }
+  if (value.new === true && (Object.hasOwn(value, "thread") || Object.hasOwn(value, "threadSwitch"))) {
+    throw configurationError(source, `new cannot be combined with ${Object.hasOwn(value, "thread") ? "thread" : "threadSwitch"}`);
+  }
   for (const [key, rawValue] of Object.entries(value)) {
     const field = CONFIGURATION_FIELD_BY_KEY.get(key);
     if (!field) throw configurationError(source, `unknown configuration key: ${key}`);
@@ -842,7 +912,7 @@ function imageExtension(mime) {
 
 function promptActionParts(prompt) {
   const parts = [];
-  const marker = /<([a-z][a-z0-9-]*)>/g;
+  const marker = /<([a-z][a-z0-9_-]*)>/g;
   let offset = 0;
   for (let match; (match = marker.exec(prompt));) {
     if (!PROMPT_ACTIONS.has(match[1])) throw new Error(`unknown prompt action <${match[1]}>; supported actions: ${[...PROMPT_ACTIONS.keys()].map((action) => `<${action}>`).join(", ")}`);
@@ -976,9 +1046,18 @@ async function readClipboardAction(workspace) {
   }
 }
 
-const PROMPT_ACTIONS = new Map([["clipboard", readClipboardAction]]);
+async function readThreadIdAction(workspace, context = {}) {
+  const threadId = Object.hasOwn(context, "threadId")
+    ? context.threadId
+    : (await readSavedState(context.statePath ?? path.join(workspace, ".codex-cli", "codex-cli.json"))).threadId;
+  if (!threadId) throw new Error("<thread_id> requires a saved codex-cli thread");
+  const digest = createHash("sha256").update(threadId).digest("hex");
+  return { input: [textInput(threadId)], digest: `thread:${digest}`, temporaryPaths: [] };
+}
 
-async function resolvePromptInput(parts, images, workspace) {
+const PROMPT_ACTIONS = new Map([["clipboard", readClipboardAction], ["thread_id", readThreadIdAction]]);
+
+async function resolvePromptInput(parts, images, workspace, actionContext = {}) {
   const input = [];
   const actionDigests = [];
   const temporaryPaths = [];
@@ -986,7 +1065,7 @@ async function resolvePromptInput(parts, images, workspace) {
     for (const part of parts) {
       if (part.type === "text") input.push(textInput(part.text));
       else {
-        const result = await PROMPT_ACTIONS.get(part.action)(workspace);
+        const result = await PROMPT_ACTIONS.get(part.action)(workspace, actionContext);
         input.push(...result.input);
         actionDigests.push(result.digest);
         temporaryPaths.push(...result.temporaryPaths);
@@ -1020,7 +1099,7 @@ function validateImageInvocation(options) {
   if (!options.images.length) return;
   if (options.help) throw new Error("--image cannot be used with --help");
   if (options.showConfig) throw new Error("--image cannot be used with --show-config");
-  if (options.bashCompletion || options.completionModels || options.completionCachedModels) throw new Error("--image cannot be used with completion output");
+  if (options.bashCompletion || options.completionModels || options.completionCachedModels || options.completionThreads) throw new Error("--image cannot be used with completion output");
   if (options.brokerServe) throw new Error("--image cannot be used while serving a broker");
   if (options.brokerAction) throw new Error(`--image cannot be used with --broker ${options.brokerAction}`);
   if (options.repl) throw new Error("--image cannot be used with --repl");
@@ -1286,6 +1365,7 @@ function bashCompletionScript(options) {
     `_CODEX_CLI_SCRIPT=${scriptPath}`,
     `_CODEX_CLI_DEFAULT_CODEX=${codexPath}`,
     `_CODEX_CLI_PROMPT_ACTIONS=${promptActions}`,
+    "_CODEX_CLI_THREAD_CONTEXT_ARGS=()",
     "",
     "_codex_cli_model_values() {",
     "  local completion_cwd=$1 completion_codex=$2 cache_key=\"$1|$2\"",
@@ -1297,6 +1377,71 @@ function bashCompletionScript(options) {
     "    _CODEX_CLI_MODEL_CACHE_KEY=$cache_key",
     "    _CODEX_CLI_MODEL_CACHE_AT=$SECONDS",
     "  fi",
+    "}",
+    "",
+    "_codex_cli_thread_values() {",
+    "  local cache_key=$PWD context_arg",
+    "  local -a command=(\"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --completion-threads --timeout 1)",
+    "  for context_arg in \"${_CODEX_CLI_THREAD_CONTEXT_ARGS[@]}\"; do printf -v cache_key '%s|%q' \"$cache_key\" \"$context_arg\"; done",
+    "  if [[ ${_CODEX_CLI_THREAD_CACHE_KEY-} == \"$cache_key\" && -n ${_CODEX_CLI_THREAD_CACHE_AT+x} && $((SECONDS - _CODEX_CLI_THREAD_CACHE_AT)) -lt 3 ]]; then return; fi",
+    "  command+=(\"${_CODEX_CLI_THREAD_CONTEXT_ARGS[@]}\")",
+    "  _CODEX_CLI_THREAD_CACHE=$(\"${command[@]}\" 2>/dev/null)",
+    "  _CODEX_CLI_THREAD_CACHE_KEY=$cache_key",
+    "  _CODEX_CLI_THREAD_CACHE_AT=$SECONDS",
+    "}",
+    "",
+    "_codex_cli_quote_thread_label() {",
+    "  local candidate=$1 quote_mode=$2",
+    "  if [[ $quote_mode == double ]]; then",
+    "    candidate=${candidate//\\\\/\\\\\\\\}",
+    "    candidate=${candidate//\\\"/\\\\\\\"}",
+    "    candidate=${candidate//\\$/\\\\$}",
+    "    candidate=${candidate//\\`/\\\\\\`}",
+    "    _CODEX_CLI_QUOTED_THREAD_LABEL=\"\\\"$candidate\\\"\"",
+    "  else",
+    "    candidate=${candidate//\\'/\\'\\\\\\'\\'}",
+    "    _CODEX_CLI_QUOTED_THREAD_LABEL=\"'$candidate'\"",
+    "  fi",
+    "}",
+    "",
+    "_codex_cli_thread_words() {",
+    "  local values=$1 prefix=$2 match_prefix=$2 quote_mode=single id label unique exact_id exact_label id_matches=0 exact_label_matches=0 restore_nocasematch=false",
+    "  local -a exact_label_ids=()",
+    "  COMPREPLY=()",
+    "  if [[ ${match_prefix:0:1} == \"'\" ]]; then match_prefix=${match_prefix:1};",
+    "  elif [[ ${match_prefix:0:1} == '\"' ]]; then quote_mode=double; match_prefix=${match_prefix:1};",
+    "  else match_prefix=${match_prefix//\\\\/}; fi",
+    "  if ! shopt -q nocasematch; then shopt -s nocasematch; restore_nocasematch=true; fi",
+    "  if [[ -n $match_prefix ]]; then",
+    "    while IFS=$'\\t' read -r id label unique; do",
+    "      if [[ $id == \"$match_prefix\" ]]; then exact_id=$id; elif [[ -n $id && $id == \"$match_prefix\"* ]]; then ((id_matches += 1)); fi",
+    "      if [[ -n $label && $label == \"$match_prefix\" ]]; then ((exact_label_matches += 1)); exact_label_ids+=(\"$id\"); [[ $unique == 1 ]] && exact_label=$label; fi",
+    "    done <<< \"$values\"",
+    "    if [[ -n $exact_id ]]; then COMPREPLY=(\"$exact_id\"); [[ $restore_nocasematch == true ]] && shopt -u nocasematch; return 0; fi",
+    "    if ((exact_label_matches)); then",
+    "      if ((exact_label_matches == 1)) && [[ -n $exact_label ]]; then",
+    "        if [[ $quote_mode == double && $exact_label == *'!'* ]]; then COMPREPLY=(\"${exact_label_ids[0]}\"); else _codex_cli_quote_thread_label \"$exact_label\" \"$quote_mode\"; COMPREPLY=(\"$_CODEX_CLI_QUOTED_THREAD_LABEL\"); fi",
+    "      else COMPREPLY=(\"${exact_label_ids[@]}\"); fi",
+    "      [[ $restore_nocasematch == true ]] && shopt -u nocasematch",
+    "      return 0",
+    "    fi",
+    "    if ((id_matches)); then",
+    "      while IFS=$'\\t' read -r id label unique; do [[ -n $id && $id == \"$match_prefix\"* ]] && COMPREPLY+=(\"$id\"); done <<< \"$values\"",
+    "      [[ $restore_nocasematch == true ]] && shopt -u nocasematch",
+    "      return 0",
+    "    fi",
+    "  fi",
+    "  while IFS=$'\\t' read -r id label unique; do",
+    "    [[ -n $id ]] || continue",
+    "    if [[ -z $label ]]; then COMPREPLY+=(\"$id\"); continue; fi",
+    "    if [[ $label == *\"$match_prefix\"* ]]; then",
+    "      if [[ $unique == 1 ]]; then",
+    "        if [[ $quote_mode == double && $label == *'!'* ]]; then COMPREPLY+=(\"$id\"); else _codex_cli_quote_thread_label \"$label\" \"$quote_mode\"; COMPREPLY+=(\"$_CODEX_CLI_QUOTED_THREAD_LABEL\"); fi",
+    "      else COMPREPLY+=(\"$id\"); fi",
+    "    fi",
+    "  done <<< \"$values\"",
+    "  [[ $restore_nocasematch == true ]] && shopt -u nocasematch",
+    "  return 0",
     "}",
     "",
     "_codex_cli_compgen() {",
@@ -1341,20 +1486,35 @@ function bashCompletionScript(options) {
     "",
     "_codex_cli_complete() {",
     "  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}",
-    "  local completion_cwd=$PWD completion_codex=$_CODEX_CLI_DEFAULT_CODEX index",
+    "  local completion_cwd=$PWD completion_codex=$_CODEX_CLI_DEFAULT_CODEX context_start=1 index",
+    "  [[ ${COMP_WORDS[0]##*/} == node ]] && context_start=2",
+    "  _CODEX_CLI_THREAD_CONTEXT_ARGS=()",
+    "  [[ ${COMP_WORDS[0]##*/} == hiai ]] && _CODEX_CLI_THREAD_CONTEXT_ARGS+=(--broker)",
+    "  for ((index = context_start; index < COMP_CWORD - 1; index += 1)); do",
+    "    case ${COMP_WORDS[index]} in",
+    "      --config|--cwd|--broker-socket|--socket|--codex) _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\"); if ((index + 1 < COMP_CWORD - 1)); then ((index += 1)); _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\"); fi ;;",
+    "      --direct|--new|--start-daemon|--repl) _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\"); case ${COMP_WORDS[index+1]-} in [Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|0|1) ((index += 1)); _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\") ;; esac ;;",
+    "      --broker) _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\"); case ${COMP_WORDS[index+1]-} in start|status|stop|threads|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|0|1) ((index += 1)); _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\") ;; esac ;;",
+    "      --prompt|--image|--state|--model|--timeout|--approval|--approval-log|--thread-label|--config-json|--thread-params|--turn-params|--verbosity|--thread|--thread-switch) ((index + 1 < COMP_CWORD - 1)) && ((index += 1)) ;;",
+    "      --show-config) if ((index + 1 < COMP_CWORD - 1)) && [[ ${COMP_WORDS[index+1]} != -* ]]; then ((index += 1)); fi ;;",
+    "      --help|-h|--version|--current-thread|--clear-model|--experimental-api|--interactive|--interrupt-pending|--progress|--interim|--debug|--diagnostics|--agentic-error-code|--json|--stdin) case ${COMP_WORDS[index+1]-} in [Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|0|1) ((index += 1)) ;; esac ;;",
+    "    esac",
+    "  done",
     "  for ((index = 1; index < COMP_CWORD; index += 1)); do",
     "    case ${COMP_WORDS[index]} in",
     "      --cwd) ((index += 1)); completion_cwd=${COMP_WORDS[index]} ;;",
     "      --codex) ((index += 1)); completion_codex=${COMP_WORDS[index]} ;;",
+    "      --broker-socket) ((index += 1)) ;;",
     "    esac",
     "  done",
     "  case $prev in",
     "    --model) _codex_cli_model_values \"$completion_cwd\" \"$completion_codex\"; _codex_cli_words \"$_CODEX_CLI_MODEL_CACHE\" \"$cur\"; return ;;",
+    "    --thread|--thread-switch) _codex_cli_thread_values; _codex_cli_thread_words \"$_CODEX_CLI_THREAD_CACHE\" \"$cur\"; return ;;",
     "    --approval) _codex_cli_words 'decline accept accept-for-session' \"$cur\"; return ;;",
     "    --verbosity) _codex_cli_words 'low medium high' \"$cur\"; return ;;",
     "    --show-config) if [[ $cur != -* ]]; then _codex_cli_words 'set all' \"$cur\"; return; fi ;;",
     "    --broker) if [[ $cur != -* ]]; then _codex_cli_words 'start status stop threads' \"$cur\"; _codex_cli_boolean_values \"$cur\"; return; fi ;;",
-    "    --help|-h|--version|--direct|--broker-serve|--new|--clear-model|--start-daemon|--experimental-api|--bash_completion|--bash-completion|--interactive|--repl|--interrupt-pending|--progress|--interim|--debug|--agentic-error-code|--json|--stdin) if [[ $cur != -* ]]; then _codex_cli_boolean_values \"$cur\"; return; fi ;;",
+    "    --help|-h|--version|--current-thread|--direct|--broker-serve|--new|--clear-model|--start-daemon|--experimental-api|--bash_completion|--bash-completion|--interactive|--repl|--interrupt-pending|--progress|--interim|--debug|--diagnostics|--agentic-error-code|--json|--stdin) if [[ $cur != -* ]]; then _codex_cli_boolean_values \"$cur\"; return; fi ;;",
     "    --cwd) _codex_cli_compgen -d \"$cur\"; return ;;",
     "    --socket|--broker-socket|--state|--approval-log|--config|--config-json|--image) _codex_cli_compgen -f \"$cur\"; return ;;",
     "    --thread-params|--turn-params) _codex_cli_at_files \"$cur\"; return ;;",
@@ -1365,7 +1525,7 @@ function bashCompletionScript(options) {
     "    _codex_cli_words 'start status stop threads' \"$cur\"; return",
     "  fi",
     "  if [[ $cur == -* ]]; then",
-    "    _codex_cli_words '--socket --direct --broker --broker-socket --prompt --image --config --show-config --config-json --thread-params --turn-params --thread --new --state --model --clear-model --start-daemon --cwd --timeout --approval --approval-log --experimental-api --interactive --repl --interrupt-pending --verbosity --progress --interim --debug --agentic-error-code --json --stdin --codex --bash_completion --bash-completion --help -h --version' \"$cur\"",
+    "    _codex_cli_words '--socket --direct --broker --broker-socket --prompt --image --config --show-config --config-json --thread-params --turn-params --thread --thread-switch --thread-label --new --state --current-thread --model --clear-model --start-daemon --cwd --timeout --approval --approval-log --experimental-api --interactive --repl --interrupt-pending --verbosity --progress --interim --debug --diagnostics --agentic-error-code --json --stdin --codex --bash_completion --bash-completion --help -h --version' \"$cur\"",
     "  fi",
     "}",
     "",
@@ -1378,7 +1538,7 @@ function bashCompletionScript(options) {
     "if ! type -t hiai >/dev/null 2>&1; then",
     "  hiai() { \"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --broker \"$@\" --agentic-error-code; }",
     "fi",
-    "complete -o default -o bashdefault -F _codex_cli_complete codex-cli cdx hiai",
+    "complete -F _codex_cli_complete codex-cli cdx hiai",
     "_codex_cli_node_complete() {",
     "  local script=${COMP_WORDS[1]-}",
     "  [[ $script == \"$_CODEX_CLI_SCRIPT\" || $script == */codex-cli || $script == codex-cli || $script == */cdx || $script == cdx || $script == */hiai || $script == hiai ]] || return 1",
@@ -1386,7 +1546,7 @@ function bashCompletionScript(options) {
     "}",
     "# Do not replace a user's existing Node completion handler.",
     "if ! complete -p node >/dev/null 2>&1; then",
-    "  complete -o default -o bashdefault -F _codex_cli_node_complete node",
+    "  complete -F _codex_cli_node_complete node",
     "fi",
     "",
   ].join("\n");
@@ -1762,9 +1922,19 @@ function serverRequestResult(options, request) {
 }
 
 const BROKER_VERSION = 1;
-const BROKER_CAPABILITIES = ["agentic-result-v1", "image-attachments-v1", "prompt-attachment-actions-v1"];
+const BROKER_CAPABILITIES = [
+  "agentic-result-v1",
+  "image-attachments-v1",
+  "prompt-attachment-actions-v1",
+  "thread-selectors-v1",
+  "thread-label-v1",
+  "turn-commit-ack-v1",
+  "thread-id-action-context-v1",
+];
 const BROKER_MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 const DEFAULT_BROKER_START_TIMEOUT_MS = 60000;
+const BROKER_THREAD_COMPLETION_CACHE_MS = 3000;
+const BROKER_TURN_COMMIT_ACK_TIMEOUT_MS = 5000;
 const TRANSIENT_THREAD_METADATA_RETRY_COUNT = 10;
 const TRANSIENT_THREAD_METADATA_RETRY_MS = 100;
 
@@ -1811,7 +1981,8 @@ function modelCacheRecoveryInstruction(diagnostics) {
   return "\nCodex has an incompatible model cache. Quit Codex, then rename ~/.codex/models_cache.json and restart the broker.";
 }
 
-async function brokerErrorWithDiagnostics(message, pidPath) {
+async function brokerErrorWithDiagnostics(message, pidPath, diagnosticsRequested = false) {
+  if (!diagnosticsRequested) return new Error(message);
   const diagnostics = await brokerDiagnosticTail(pidPath);
   return new Error(`${message}${diagnostics ? `\nbroker diagnostics:\n${diagnostics}` : ""}${modelCacheRecoveryInstruction(diagnostics)}`);
 }
@@ -1898,14 +2069,14 @@ function brokerControl(socketPath, message, timeoutMs = 2000) {
   });
 }
 
-async function probeBroker(socketPath) {
+async function probeBroker(socketPath, timeoutMs = 500) {
   try {
-    const response = await brokerControl(socketPath, { type: "status" }, 500);
+    const response = await brokerControl(socketPath, { type: "status" }, timeoutMs);
     return response.type === "status" && response.ready ? response : undefined;
   } catch { return undefined; }
 }
 
-async function startBroker(options) {
+async function startBroker(options, { startupTimeoutMs } = {}) {
   const { socketPath, pidPath } = resolveBrokerPaths(options);
   const namedPipe = isWindowsNamedPipe(socketPath);
   const running = await probeBroker(socketPath);
@@ -1945,15 +2116,16 @@ async function startBroker(options) {
     await diagnosticHandle.close();
   }
   child.unref();
-  const startupTimeoutMs = Math.max(DEFAULT_BROKER_START_TIMEOUT_MS, options.timeout * 1000);
-  const deadline = Date.now() + startupTimeoutMs;
+  const effectiveStartupTimeoutMs = startupTimeoutMs ?? Math.max(DEFAULT_BROKER_START_TIMEOUT_MS, options.timeout * 1000);
+  const deadline = Date.now() + effectiveStartupTimeoutMs;
   while (Date.now() < deadline) {
     const status = await probeBroker(socketPath);
     if (status) { stderr.write(`codex-cli: broker started (pid ${status.pid}, socket ${socketPath})\n`); return; }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  const detail = await brokerDiagnosticTail(pidPath);
-  throw new Error(`broker failed to become ready within ${startupTimeoutMs / 1000} seconds${detail ? `: ${detail}` : " (broker child provided no stderr)"}${modelCacheRecoveryInstruction(detail)}`);
+  const detail = options.diagnostics ? await brokerDiagnosticTail(pidPath) : "";
+  const diagnosticDetail = options.diagnostics ? (detail ? `: ${detail}` : " (broker child provided no stderr)") : "";
+  throw new Error(`broker failed to become ready within ${effectiveStartupTimeoutMs / 1000} seconds${diagnosticDetail}${modelCacheRecoveryInstruction(detail)}`);
 }
 
 async function statusBroker(options) {
@@ -1975,9 +2147,107 @@ async function stopBroker(options) {
   stderr.write("codex-cli: broker stopped\n");
 }
 
+const CODEX_THREAD_SOURCE_KINDS = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"];
+const COMPLETE_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const THREAD_SELECTOR_AMBIGUOUS_EXIT_CODE = 65;
+const THREAD_SELECTOR_NOT_FOUND_EXIT_CODE = 66;
+
+function normalizeThreadText(value) {
+  return typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim()
+    : "";
+}
+
+function threadSelectorLabel(thread) {
+  return normalizeThreadText(thread.name) || normalizeThreadText(thread.preview);
+}
+
 function threadListLabel(thread) {
-  const text = thread.name || thread.preview || "";
-  return text.replace(/\s+/g, " ").trim().slice(0, 96);
+  return threadSelectorLabel(thread);
+}
+
+function uniqueThreads(threads) {
+  return [...new Map(threads.filter((thread) => typeof thread?.id === "string" && thread.id).map((thread) => [thread.id, thread])).values()];
+}
+
+function threadSelectorError(message, code, exitCode) {
+  return Object.assign(new Error(message), { code, exitCode });
+}
+
+function ambiguousThreadSelector(selector, matches) {
+  const candidates = uniqueThreads(matches).slice(0, 5).map((thread) => {
+    const label = threadSelectorLabel(thread);
+    return `${label ? `${JSON.stringify(label)} ` : ""}(${thread.id})`;
+  });
+  return threadSelectorError(
+    `thread selector is ambiguous: ${JSON.stringify(selector)}${candidates.length ? `; matches ${candidates.join(", ")}` : ""}; provide more of its ID or label`,
+    "THREAD_SELECTOR_AMBIGUOUS",
+    THREAD_SELECTOR_AMBIGUOUS_EXIT_CODE,
+  );
+}
+
+function missingThreadSelector(selector) {
+  return threadSelectorError(
+    `no Codex thread matches selector: ${JSON.stringify(selector)}`,
+    "THREAD_SELECTOR_NOT_FOUND",
+    THREAD_SELECTOR_NOT_FOUND_EXIT_CODE,
+  );
+}
+
+async function fetchCodexThreads(client, {
+  includeArchived = true,
+  maxPages = Number.POSITIVE_INFINITY,
+  pageLimit = 100,
+  sortDirection = "asc",
+} = {}) {
+  const threads = [];
+  for (const archived of includeArchived ? [false, true] : [false]) {
+    let cursor = null;
+    let pages = 0;
+    do {
+      const response = await client.request("thread/list", {
+        cursor,
+        limit: pageLimit,
+        sortKey: "created_at",
+        sortDirection,
+        sourceKinds: CODEX_THREAD_SOURCE_KINDS,
+        archived,
+      });
+      for (const thread of response.data ?? []) threads.push({ ...thread, archived });
+      cursor = response.nextCursor ?? null;
+      pages += 1;
+    } while (cursor && pages < maxPages);
+  }
+  const result = uniqueThreads(threads);
+  const direction = sortDirection === "desc" ? -1 : 1;
+  result.sort((left, right) => direction * ((left.createdAt ?? 0) - (right.createdAt ?? 0) || String(left.id).localeCompare(String(right.id))));
+  return result;
+}
+
+async function resolveThreadSelector(client, selector) {
+  if (typeof selector !== "string" || !selector.trim()) {
+    throw threadSelectorError("thread selector must be a non-empty string", "INVALID_THREAD_SELECTOR", 2);
+  }
+  const trimmedSelector = selector.trim();
+  if (COMPLETE_THREAD_ID.test(trimmedSelector)) return trimmedSelector.toLowerCase();
+  const normalizedSelector = normalizeThreadText(trimmedSelector).toLowerCase();
+  const threads = await fetchCodexThreads(client);
+  const selectUnique = (matches) => {
+    const unique = uniqueThreads(matches);
+    if (unique.length === 1) return unique[0].id;
+    if (unique.length > 1) throw ambiguousThreadSelector(trimmedSelector, unique);
+    return undefined;
+  };
+
+  const exactLabel = selectUnique(threads.filter((thread) => threadSelectorLabel(thread).toLowerCase() === normalizedSelector));
+  if (exactLabel) return exactLabel;
+  const exactCatalogId = selectUnique(threads.filter((thread) => thread.id.toLowerCase() === normalizedSelector));
+  if (exactCatalogId) return exactCatalogId;
+  const idPrefix = selectUnique(threads.filter((thread) => thread.id.toLowerCase().startsWith(normalizedSelector)));
+  if (idPrefix) return idPrefix;
+  const labelFragment = selectUnique(threads.filter((thread) => threadSelectorLabel(thread).toLowerCase().includes(normalizedSelector)));
+  if (labelFragment) return labelFragment;
+  throw missingThreadSelector(trimmedSelector);
 }
 
 function formatThreadListRow(thread) {
@@ -2018,13 +2288,59 @@ async function listBrokerThreads(options) {
   });
 }
 
+async function printCompletionThreads(options) {
+  const brokerWasExplicitlyDisabled = options.broker === false && options.optionSources.broker?.kind !== "default";
+  if (brokerWasExplicitlyDisabled || options.direct || options.socket || options.new || options.startDaemon || options.repl || options.brokerAction) return;
+  const { socketPath } = resolveBrokerPaths(options);
+  const deadline = Date.now() + options.timeout * 1000;
+  const probeRemainingMs = deadline - Date.now();
+  if (probeRemainingMs <= 0) return;
+  const status = await probeBroker(socketPath, Math.max(1, Math.min(500, probeRemainingMs)));
+  if (!status?.capabilities?.includes("thread-selectors-v1")) return;
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return;
+  const listing = await new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    const threads = [];
+    let finished = false;
+    let completed = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve({ threads, completed });
+    };
+    const timer = setTimeout(finish, remainingMs);
+    socket.once("error", finish);
+    socket.once("close", finish);
+    socket.once("connect", () => sendBrokerMessage(socket, { type: "threads", completion: true }));
+    new JsonLinePeer(socket, (message) => {
+      if (message.type === "thread-list-item" && typeof message.thread?.id === "string") threads.push(message.thread);
+      if (message.type === "threads-completed") { completed = true; finish(); }
+      else if (message.type === "error") finish();
+    });
+  });
+  if (!listing.completed) return;
+  const uniqueThreads = [...new Map(listing.threads.map((thread) => [thread.id, thread])).values()];
+  stdout.write(uniqueThreads.map((thread) => {
+    const label = threadSelectorLabel(thread);
+    const uniqueLabel = label && thread.completionLabelUnique === true ? "1" : "0";
+    return `${thread.id}\t${label}\t${uniqueLabel}`;
+  }).join("\n"));
+  if (uniqueThreads.length) stdout.write("\n");
+}
+
 function validateBrokerRun(request, workspace) {
   if (request.version !== BROKER_VERSION || request.type !== "run") throw new Error("unsupported broker protocol message");
   if (path.resolve(request.cwd ?? "") !== workspace) throw new Error("broker request cwd does not match the broker workspace");
   if (typeof request.prompt !== "string" || !request.prompt.trim()) throw new Error("broker prompt is required");
   if (typeof request.new !== "boolean") throw new Error("broker new must be a boolean");
   if (request.threadId !== undefined && typeof request.threadId !== "string") throw new Error("broker threadId must be a string");
+  if (request.threadExplicit && !request.threadId?.trim()) throw new Error("broker thread selector must be a non-empty string");
   if (request.new && request.threadId !== undefined) throw new Error("broker new request cannot select a thread");
+  if (request.threadLabel !== undefined && (typeof request.threadLabel !== "string" || !request.threadLabel.trim())) throw new Error("broker threadLabel must be a non-empty string");
+  if (request.savedThreadId !== undefined && request.savedThreadId !== null && typeof request.savedThreadId !== "string") throw new Error("broker savedThreadId must be a string or null");
   if (request.promptParts === undefined) request.promptParts = promptActionParts(request.prompt);
   else validatePromptParts(request.promptParts);
   if (!["decline", "accept", "accept-for-session"].includes(request.approval)) throw new Error("invalid broker approval mode");
@@ -2033,6 +2349,8 @@ function validateBrokerRun(request, workspace) {
   if (request.autoNewOnStale !== undefined && typeof request.autoNewOnStale !== "boolean") throw new Error("broker autoNewOnStale must be a boolean");
   if (request.resumeActiveTurn !== undefined && typeof request.resumeActiveTurn !== "boolean") throw new Error("broker resumeActiveTurn must be a boolean");
   if (request.interruptPending !== undefined && typeof request.interruptPending !== "boolean") throw new Error("broker interruptPending must be a boolean");
+  if (request.threadExplicit !== undefined && typeof request.threadExplicit !== "boolean") throw new Error("broker threadExplicit must be a boolean");
+  if (request.turnCommitAck !== undefined && typeof request.turnCommitAck !== "boolean") throw new Error("broker turnCommitAck must be a boolean");
   if (request.interactive !== undefined && typeof request.interactive !== "boolean") throw new Error("broker interactive must be a boolean");
   if (request.interim !== undefined && typeof request.interim !== "boolean") throw new Error("broker interim must be a boolean");
   if (request.json !== undefined && typeof request.json !== "boolean") throw new Error("broker json must be a boolean");
@@ -2052,10 +2370,15 @@ function validateBrokerRun(request, workspace) {
   if (!request.new && (request.threadParamsSpecified || Object.keys(request.threadParams ?? {}).length)) throw new Error("--config-json and --thread-params apply only when creating a thread with --new");
 }
 
-function staleBrokerThreadError(threadId) {
+function staleBrokerThreadError(threadId, explicit = false) {
+  if (explicit) return missingThreadSelector(threadId);
   const error = new Error(`thread not found in this broker instance: ${threadId}; use --new`);
   error.code = "STALE_THREAD";
   return error;
+}
+
+function isThreadNotFoundError(error) {
+  return /thread not found/i.test(error?.message ?? "");
 }
 
 function turnPromptText(turn) {
@@ -2213,6 +2536,9 @@ async function serveBroker(options) {
   let active;
   let shuttingDown = false;
   let appHealthy = true;
+  let completionThreadCatalogCache;
+  let completionThreadCatalogPending;
+  let completionThreadCatalogGeneration = 0;
   const knownThreads = new Set();
   const activeTurnInputs = new Map();
   const brokerTemporaryAttachments = new Set();
@@ -2294,18 +2620,44 @@ async function serveBroker(options) {
   });
   await app.request("initialize", { clientInfo: { name: "codex-cli-broker", title: "Codex CLI broker", version: "0.1.0" }, capabilities: { experimentalApi: options.experimentalApi, requestAttestation: false } });
 
-  const listThreads = async (peer) => {
-    const sourceKinds = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"];
-    const threads = [];
-    for (const archived of [false, true]) {
-      let cursor = null;
-      do {
-        const response = await app.request("thread/list", { cursor, limit: 100, sortKey: "created_at", sortDirection: "asc", sourceKinds, archived });
-        for (const thread of response.data ?? []) threads.push({ ...thread, archived });
-        cursor = response.nextCursor ?? null;
-      } while (cursor);
+  const invalidateCompletionThreadCatalog = () => {
+    completionThreadCatalogGeneration += 1;
+    completionThreadCatalogCache = undefined;
+  };
+  const completionThreadCatalog = async () => {
+    if (completionThreadCatalogCache?.expiresAt > Date.now()) return completionThreadCatalogCache.threads;
+    if (!completionThreadCatalogPending) {
+      const generation = completionThreadCatalogGeneration;
+      const pending = fetchCodexThreads(app, { includeArchived: true, sortDirection: "desc" }).then((allThreads) => {
+        if (generation !== completionThreadCatalogGeneration) return undefined;
+        const labelCounts = new Map();
+        for (const thread of allThreads) {
+          const normalized = threadSelectorLabel(thread).toLowerCase();
+          if (normalized) labelCounts.set(normalized, (labelCounts.get(normalized) ?? 0) + 1);
+        }
+        const threads = allThreads.filter((thread) => !thread.archived).slice(0, 50).map((thread) => {
+          const label = threadSelectorLabel(thread);
+          return {
+            ...thread,
+            completionLabelUnique: Boolean(label) && !COMPLETE_THREAD_ID.test(label) && labelCounts.get(label.toLowerCase()) === 1,
+          };
+        });
+        completionThreadCatalogCache = { expiresAt: Date.now() + BROKER_THREAD_COMPLETION_CACHE_MS, threads };
+        return threads;
+      });
+      const wrappedPending = pending.finally(() => {
+        if (completionThreadCatalogPending === wrappedPending) completionThreadCatalogPending = undefined;
+      });
+      completionThreadCatalogPending = wrappedPending;
     }
-    threads.sort((left, right) => (left.createdAt ?? 0) - (right.createdAt ?? 0) || String(left.id).localeCompare(String(right.id)));
+    const threads = await completionThreadCatalogPending;
+    return threads ?? completionThreadCatalog();
+  };
+
+  const listThreads = async (peer, completion = false) => {
+    const threads = completion
+      ? await completionThreadCatalog()
+      : await fetchCodexThreads(app, { includeArchived: true, sortDirection: "asc" });
     for (const thread of threads) peer.send({ type: "thread-list-item", thread });
     peer.send({ type: "threads-completed" });
   };
@@ -2343,9 +2695,13 @@ async function serveBroker(options) {
     try {
       request.images = await prepareImageAttachments((request.images ?? []).map((image) => ({ value: image.path })), workspace);
       if (request.debug && !request.json) for (const image of request.images) run.peer.send({ type: "debug", message: `attached image ${imageDescription(image)}` });
-      resolvedInput = await resolvePromptInput(request.promptParts ?? [textInput(request.prompt)], request.images, workspace);
+      const threadIdActionContext = Object.hasOwn(request, "savedThreadId")
+        ? { threadId: request.savedThreadId }
+        : { statePath: options.state };
+      resolvedInput = await resolvePromptInput(request.promptParts ?? [textInput(request.prompt)], request.images, workspace, threadIdActionContext);
       let threadId = request.threadId;
       let createdThread = Boolean(request.new);
+      if (!createdThread && request.threadExplicit) threadId = await resolveThreadSelector(app, threadId);
       const startThread = async () => {
         if (!run.configurationWarningsEmitted) {
           run.configurationWarningsEmitted = true;
@@ -2354,6 +2710,7 @@ async function serveBroker(options) {
         const threadStartParams = { cwd: workspace, ephemeral: false, ...(request.threadParams ?? {}) };
         if (Object.hasOwn(request, "model")) threadStartParams.model = request.model;
         const response = await app.request("thread/start", threadStartParams);
+        invalidateCompletionThreadCatalog();
         threadId = response.thread.id;
         knownThreads.add(threadId);
         run.threadId = threadId;
@@ -2367,24 +2724,74 @@ async function serveBroker(options) {
         run.threadId = threadId;
         return response;
       };
+      const resumeSelectedThread = async () => {
+        try { return await resumeThread(); }
+        catch (error) {
+          if (request.threadExplicit) {
+            if (isThreadNotFoundError(error)) throw missingThreadSelector(request.threadId);
+            throw error;
+          }
+          if (!request.autoNewOnStale) throw staleBrokerThreadError(threadId);
+          throw error;
+        }
+      };
+      const setThreadLabel = async () => {
+        if (request.threadLabel !== undefined) {
+          try { await app.request("thread/name/set", { threadId, name: request.threadLabel.trim() }); }
+          catch (error) {
+            error.keepTurn = true;
+            throw error;
+          }
+          invalidateCompletionThreadCatalog();
+        }
+      };
+      const commitCompletedTurn = async () => {
+        if (!request.turnCommitAck) return;
+        const requestId = randomBytes(16).toString("hex");
+        const acknowledgement = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            if (run.pendingTurnCommit?.requestId !== requestId) return;
+            run.pendingTurnCommit = undefined;
+            const error = new Error("client did not acknowledge completed-turn state within 5 seconds");
+            error.keepTurn = true;
+            reject(error);
+          }, BROKER_TURN_COMMIT_ACK_TIMEOUT_MS);
+          run.pendingTurnCommit = {
+            requestId,
+            resolve: () => {
+              clearTimeout(timer);
+              if (run.pendingTurnCommit?.requestId === requestId) run.pendingTurnCommit = undefined;
+              resolve();
+            },
+            reject: (error) => {
+              clearTimeout(timer);
+              if (run.pendingTurnCommit?.requestId === requestId) run.pendingTurnCommit = undefined;
+              error.keepTurn = true;
+              reject(error);
+            },
+          };
+        });
+        run.peer.send({ type: "turn-completed", requestId, threadId, turnId: run.turnId });
+        await acknowledgement;
+      };
       if (createdThread) {
         await startThread();
       } else {
+        let response;
         try {
-          const response = await readThreadWithRetry(app, { threadId, includeTurns: true });
-          if (threadIsNotLoaded(response)) {
-            if (!request.autoNewOnStale) await resumeThread();
-            else {
-              createdThread = true;
-              await startThread();
-            }
+          response = await readThreadWithRetry(app, { threadId, includeTurns: true });
+        }
+        catch {
+          if (!request.autoNewOnStale) {
+            await resumeSelectedThread();
+          } else {
+            createdThread = true;
+            await startThread();
           }
         }
-        catch (error) {
-          if (!request.autoNewOnStale) {
-            try { await resumeThread(); }
-            catch { throw staleBrokerThreadError(threadId); }
-          } else {
+        if (response && threadIsNotLoaded(response)) {
+          if (!request.autoNewOnStale) await resumeSelectedThread();
+          else {
             createdThread = true;
             await startThread();
           }
@@ -2394,11 +2801,11 @@ async function serveBroker(options) {
       const before = createdThread ? undefined : await (async () => {
         try {
           const response = await readThreadWithRetry(app, { threadId, includeTurns: true });
-          return threadIsNotLoaded(response) && !request.autoNewOnStale ? resumeThread() : response;
+          return threadIsNotLoaded(response) && !request.autoNewOnStale ? resumeSelectedThread() : response;
         }
         catch {
-          if (request.autoNewOnStale) throw staleBrokerThreadError(threadId);
-          return resumeThread();
+          if (request.autoNewOnStale) throw staleBrokerThreadError(threadId, request.threadExplicit);
+          return resumeSelectedThread();
         }
       })();
       const pending = before?.thread.turns.filter((turn) => turn.status === "inProgress") ?? [];
@@ -2429,9 +2836,12 @@ async function serveBroker(options) {
             await startThread();
             turnStartParams.threadId = threadId;
             started = await app.request("turn/start", turnStartParams);
-          } else if (!createdThread && /thread not found/i.test(error.message)) throw staleBrokerThreadError(threadId);
+          } else if (!createdThread && isThreadNotFoundError(error)) {
+            throw staleBrokerThreadError(request.threadExplicit ? request.threadId : threadId, request.threadExplicit);
+          }
           else throw error;
         }
+        invalidateCompletionThreadCatalog();
         for (const filePath of resolvedInput.temporaryPaths) brokerTemporaryAttachments.add(filePath);
         resolvedInput.temporaryPaths = [];
       }
@@ -2477,6 +2887,8 @@ async function serveBroker(options) {
             }
           }
           activeTurnInputs.delete(run.turnId);
+          await commitCompletedTurn();
+          await setThreadLabel();
           run.peer.send({
             type: "completed",
             threadId,
@@ -2546,12 +2958,15 @@ async function serveBroker(options) {
   app.child.once("exit", (code, signal) => appServerExited(signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`));
 
   server = net.createServer((socket) => {
+    socket.on("error", (error) => {
+      if (error.code !== "EPIPE") stderr.write(`codex-cli broker: client socket error: ${error.message}\n`);
+    });
     let peer;
     peer = new JsonLinePeer(socket, async (message) => {
       if (message.version !== BROKER_VERSION) { peer.send({ type: "error", code: "VERSION", exitCode: 2, message: "unsupported broker protocol version" }); return peer.close(); }
       if (message.type === "status") { peer.send({ type: "status", ready: appHealthy, pid: process.pid, instanceId, socketPath, active: Boolean(active), experimentalApi: options.experimentalApi, capabilities: BROKER_CAPABILITIES }); return peer.close(); }
       if (message.type === "threads") {
-        try { await listThreads(peer); }
+        try { await listThreads(peer, message.completion === true); }
         catch (error) { peer.send({ type: "error", code: "THREAD_LIST_FAILED", exitCode: error.exitCode ?? 2, message: error.message }); }
         return peer.close();
       }
@@ -2568,13 +2983,22 @@ async function serveBroker(options) {
         if (!active || active.peer !== peer || active.pendingUserInput?.requestId !== message.requestId) return peer.send({ type: "error", code: "USER_INPUT_ID", exitCode: 2, message: "user-input response does not match the active request" });
         active.pendingUserInput.resolve({ answers: message.answers && typeof message.answers === "object" ? message.answers : {} }); return;
       }
+      if (message.type === "turn-commit-ack") {
+        if (!active || active.peer !== peer || active.pendingTurnCommit?.requestId !== message.requestId) return peer.send({ type: "error", code: "TURN_COMMIT_ID", exitCode: 2, message: "turn commit acknowledgement does not match the active request" });
+        active.pendingTurnCommit.resolve(); return;
+      }
       if (message.type !== "run") { peer.send({ type: "error", code: "TYPE", exitCode: 2, message: "unsupported broker message type" }); return peer.close(); }
       try { validateBrokerRun(message, workspace); } catch (error) { peer.send({ type: "error", code: "INVALID_REQUEST", exitCode: 2, message: error.message }); return peer.close(); }
       if (!appHealthy) { peer.send({ type: "error", code: "APP_SERVER_EXITED", exitCode: 2, message: "broker app-server exited unexpectedly; restart the broker" }); return peer.close(); }
       if (active) { peer.send({ type: "error", code: "BUSY", exitCode: 75, message: "broker is busy with another turn" }); return peer.close(); }
-      const run = { peer, request: message, streamedItems: new Set(), streamBuffers: new Map(), renderedItems: new Set(), renderedTexts: new Set(), disconnected: false, lastTurnError: undefined, terminalTurnError: undefined, terminalTurnRequiresInterrupt: false };
+      const run = { peer, request: message, streamedItems: new Set(), streamBuffers: new Map(), renderedItems: new Set(), renderedTexts: new Set(), disconnected: false, lastTurnError: undefined, terminalTurnError: undefined, terminalTurnRequiresInterrupt: false, pendingTurnCommit: undefined };
       active = run;
-      socket.once("close", () => { run.disconnected = true; run.pendingApproval?.resolve("decline"); run.pendingUserInput?.resolve({ answers: {} }); });
+      socket.once("close", () => {
+        run.disconnected = true;
+        run.pendingApproval?.resolve("decline");
+        run.pendingUserInput?.resolve({ answers: {} });
+        run.pendingTurnCommit?.reject(new Error("broker client disconnected before completed-turn state was acknowledged"));
+      });
       executeRun(run);
     });
   });
@@ -2601,7 +3025,7 @@ async function serveBroker(options) {
 async function runBrokerClient(options, prompt, promptParts, savedState) {
   const { socketPath, pidPath } = resolveBrokerPaths(options);
   const status = await probeBroker(socketPath);
-  if (!status) throw await brokerErrorWithDiagnostics(`broker is not running; start it with: node ${process.argv[1]} --broker start`, pidPath);
+  if (!status) throw await brokerErrorWithDiagnostics(`broker is not running; start it with: node ${process.argv[1]} --broker start`, pidPath, options.diagnostics);
   if (options.experimentalApi && !status.experimentalApi) throw new Error("broker was not started with --experimental-api; stop it and restart with: --broker start --experimental-api");
   if (options.agenticErrorCode && !status.capabilities?.includes("agentic-result-v1")) {
     throw new Error("running broker does not support --agentic-error-code; restart it with: codex-cli --broker stop && codex-cli --broker start");
@@ -2611,6 +3035,19 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
   }
   if (promptParts.some((part) => part.type === "action") && !status.capabilities?.includes("prompt-attachment-actions-v1")) {
     throw new Error("running broker does not support prompt attachment actions; restart it with: codex-cli --broker stop && codex-cli --broker start");
+  }
+  const usesThreadIdAction = promptParts.some((part) => part.type === "action" && part.action === "thread_id");
+  if (usesThreadIdAction && !status.capabilities?.includes("thread-id-action-context-v1")) {
+    throw new Error("running broker does not support client-state <thread_id> expansion; restart it with: codex-cli --broker stop && codex-cli --broker start");
+  }
+  if (options.threadExplicit && !status.capabilities?.includes("thread-selectors-v1")) {
+    throw new Error("running broker does not support thread selectors; restart it with: codex-cli --broker stop && codex-cli --broker start");
+  }
+  if (options.threadLabel !== undefined && !status.capabilities?.includes("thread-label-v1")) {
+    throw new Error("running broker does not support --thread-label; restart it with: codex-cli --broker stop && codex-cli --broker start");
+  }
+  if (options.threadSwitchExplicit && options.threadLabel !== undefined && !status.capabilities?.includes("turn-commit-ack-v1")) {
+    throw new Error("running broker cannot preserve a completed --thread-switch across a label failure; restart it with: codex-cli --broker stop && codex-cli --broker start");
   }
   const crash = await readProcedureCrash(options.state);
   const brokerRestarted = savedState.transport !== "broker" ||
@@ -2647,6 +3084,12 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
     let transportFailurePending = false;
     let brokerResponseFailurePending = false;
     let terminalMessageReceived = false;
+    let threadSwitchPersisted = false;
+    const persistThreadSwitch = async (threadId) => {
+      if (!options.threadSwitchExplicit || threadSwitchPersisted) return;
+      await saveThread(options.state, threadId, options.clearModel ? undefined : options.model, { transport: "broker", brokerInstanceId: status.instanceId, lastPrompt: prompt });
+      threadSwitchPersisted = true;
+    };
     const finish = (error) => {
       if (finished) return;
       finished = true;
@@ -2673,7 +3116,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
     const finishTransportFailure = (message) => {
       if (finished || terminalMessageReceived || transportFailurePending || brokerResponseFailurePending) return;
       transportFailurePending = true;
-      void brokerErrorWithDiagnostics(message, pidPath).then(async (error) => {
+      void brokerErrorWithDiagnostics(message, pidPath, options.diagnostics).then(async (error) => {
         const incident = await recordCrash(error.message);
         if (incident) error.message = `${error.message}\n${crashRecoveryMessage(procedure.threadId, incident.transcriptPath)}`;
         finish(error);
@@ -2690,7 +3133,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
       // terminal error. Mark the structured response first so that the close
       // event cannot race the diagnostic-log read and replace its exit code.
       brokerResponseFailurePending = true;
-      void brokerErrorWithDiagnostics(message, pidPath).then(async (error) => {
+      void brokerErrorWithDiagnostics(message, pidPath, options.diagnostics).then(async (error) => {
         error.exitCode = exitCode;
         if (unexpectedTermination) {
           const incident = await recordCrash(error.message);
@@ -2721,10 +3164,13 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
         interim: options.interim,
         configWarnings: options.configWarnings,
         threadParamsSpecified: options.threadParamsSpecified,
+        threadExplicit: options.threadExplicit,
         threadId: options.thread,
+        threadLabel: options.threadLabel,
         cwd: path.resolve(options.cwd),
         prompt,
         promptParts,
+        ...(usesThreadIdAction ? { savedThreadId: savedState.threadId ?? null } : {}),
         images: options.images,
         model: options.clearModel ? null : options.model,
         threadParams: options.threadParams,
@@ -2735,6 +3181,7 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
         interruptPending: options.interruptPending,
         json: options.json,
         timeout: options.timeout,
+        turnCommitAck: status.capabilities?.includes("turn-commit-ack-v1") === true,
       });
       progress.start();
     });
@@ -2743,8 +3190,10 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
       if (message.type === "thread") {
         options.thread = message.threadId;
         procedure.threadId = message.threadId;
-        try { await saveThread(options.state, message.threadId, options.clearModel ? undefined : options.model, { transport: "broker", brokerInstanceId: message.instanceId, lastPrompt: prompt }); }
-        catch (error) { finish(error); return; }
+        if (!options.threadExplicit) {
+          try { await saveThread(options.state, message.threadId, options.clearModel ? undefined : options.model, { transport: "broker", brokerInstanceId: message.instanceId, lastPrompt: prompt }); }
+          catch (error) { finish(error); return; }
+        }
         if (options.json) stdout.write(`${JSON.stringify({ method: "thread/selected", params: { threadId: message.threadId, brokerInstanceId: message.instanceId } })}\n`);
         else if (message.created || options.new) {
           progress.stop();
@@ -2790,10 +3239,18 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
           }
         } finally { terminal.close(); }
         sendBrokerMessage(socket, { type: "user-input-response", requestId: message.requestId, answers });
+      } else if (message.type === "turn-completed") {
+        try {
+          await persistThreadSwitch(message.threadId);
+          sendBrokerMessage(socket, { type: "turn-commit-ack", requestId: message.requestId });
+        } catch (error) {
+          finish(error);
+        }
       } else if (message.type === "completed") {
         terminalMessageReceived = true;
         progress.stop();
         try {
+          await persistThreadSwitch(message.threadId);
           await recordProcedureEvent({ type: "turn-completed", threadId: procedure.threadId, finalMessage: message.finalMessage ?? null });
           if (options.recoverCrash) await markProcedureRecovered(options.state, procedure.threadId);
           if (options.agenticErrorCode) emitAgenticResult(options, message.finalMessage);
@@ -2826,6 +3283,21 @@ async function main() {
     parseArgs(argv, options);
   } catch (error) { fail(error.message); return; }
   agenticErrorCodeActive = options.agenticErrorCode;
+  if (options.thread !== undefined && options.threadSwitch !== undefined) { fail("--thread and --thread-switch cannot be combined"); return; }
+  if (options.threadExplicit && !options.thread?.trim()) { fail("--thread selector must not be empty"); return; }
+  if (options.threadSwitchExplicit && !options.threadSwitch?.trim()) { fail("--thread-switch selector must not be empty"); return; }
+  if (options.threadLabel !== undefined && !options.threadLabel.trim()) { fail("--thread-label must not be empty"); return; }
+  if (options.completionThreads) {
+    if (options.optionSources.cwd?.kind === "default") {
+      options.cwd = await resolveImplicitBrokerWorkspace(invocationCwd);
+      options.optionSources.cwd = { kind: "implicit-broker", path: options.cwd };
+    }
+    options.cwd = path.resolve(options.cwd);
+    if (options.brokerSocket) options.brokerSocket = resolveIpcEndpoint(options.cwd, options.brokerSocket);
+    await validateWorkspace(options.cwd);
+    await printCompletionThreads(options);
+    return;
+  }
   try { validateImageInvocation(options); } catch (error) { fail(error.message); return; }
   if (options.version) { stdout.write(`codex-cli ${CLI_VERSION}\n`); return; }
   if (options.help) { stdout.write(usage); return; }
@@ -2849,12 +3321,37 @@ async function main() {
   if (options.bashCompletion) { stdout.write(bashCompletionScript(options)); return; }
   if (options.completionModels || options.completionCachedModels) { await printCompletionModels(options); return; }
   if (options.brokerServe) { await serveBroker(options); return; }
+  if (options.brokerAction && (
+    options.commandThreadSelector ||
+    options.threadLabel !== undefined ||
+    options.currentThread ||
+    options.optionSources.new?.kind === "command" ||
+    options.prompt.length ||
+    options.stdin
+  )) {
+    fail(`--broker ${options.brokerAction} cannot be combined with a prompt, --stdin, --new, --thread, --thread-switch, --thread-label, or --current-thread`);
+    return;
+  }
   if (options.brokerAction === "start") { showWelcomeBanner(options, stderr, true); await startBroker(options); return; }
   if (options.brokerAction === "status") { await statusBroker(options); return; }
   if (options.brokerAction === "stop") { await stopBroker(options); return; }
   if (options.brokerAction === "threads") { await listBrokerThreads(options); return; }
+  if (options.threadSwitchExplicit) {
+    options.thread = options.threadSwitch;
+    options.threadExplicit = true;
+  }
   if (options.broker && (options.direct || options.socket || options.repl || options.startDaemon)) { fail("--broker cannot be combined with --direct, --socket, --repl, or --start-daemon"); return; }
   let savedState = await readSavedState(options.state);
+  if (options.currentThread) {
+    if (options.prompt.length || options.stdin) { fail("--current-thread cannot be combined with a prompt or --stdin"); return; }
+    if (options.commandThreadSelector || options.threadLabel !== undefined || options.optionSources.new?.kind === "command") {
+      fail("--current-thread cannot be combined with --new, --thread, --thread-switch, or --thread-label");
+      return;
+    }
+    if (!savedState.threadId) { fail(`no saved thread found at ${options.state}`); return; }
+    stdout.write(`${savedState.threadId}\n`);
+    return;
+  }
   // A workspace that was last used through the broker should keep using that
   // transport when the caller supplies no transport selector. Otherwise a
   // plain follow-up prompt falls back to Codex's managed control socket and
@@ -2877,6 +3374,7 @@ async function main() {
     options.new = true;
     options.thread = undefined;
   }
+  if (options.threadLabel !== undefined && !options.broker) { fail("--thread-label requires --broker"); return; }
   try { normalizeSandboxParams(options); } catch (error) { fail(error.message); return; }
   if (options.threadParamsSpecified && !options.new && !options.broker) { fail("--config-json and --thread-params apply only when creating a thread with --new"); return; }
   const rawModelSpecified = Object.hasOwn(options.threadParams, "model") || Object.hasOwn(options.turnParams, "model");
@@ -2922,7 +3420,7 @@ async function main() {
   let currentPrompt = prompt;
   let currentPromptParts = promptParts;
   let currentInput;
-  try { currentInput = await resolvePromptInput(currentPromptParts, options.images, options.cwd); }
+  try { currentInput = await resolvePromptInput(currentPromptParts, options.images, options.cwd, { statePath: options.state }); }
   catch (error) { fail(error.message); return; }
   const temporaryAttachments = new Set(currentInput.temporaryPaths);
 
@@ -2992,6 +3490,7 @@ async function main() {
       }
     }
     let threadId = options.thread;
+    if (!options.new && options.threadExplicit) threadId = await resolveThreadSelector(client, threadId);
     if (options.new) {
       emitConfigurationWarnings(options.configWarnings);
       const threadStartParams = { cwd: options.cwd, ephemeral: false, ...options.threadParams };
@@ -3000,8 +3499,8 @@ async function main() {
       threadId = response.thread.id;
       if (options.json) stdout.write(`${JSON.stringify({ method: "thread/selected", params: { threadId } })}\n`);
       else stderr.write(`codex-cli: started thread ${threadId}\n`);
+      if (!options.direct) await saveThread(options.state, threadId, options.clearModel ? undefined : options.model);
     }
-    if (!options.direct) await saveThread(options.state, threadId, options.clearModel ? undefined : options.model);
     targetThreadId = threadId;
     if (!options.new) {
       const readOrResumeThread = async () => {
@@ -3010,13 +3509,21 @@ async function main() {
           if (hasModelOverride(options)) resumeParams.model = options.clearModel ? null : options.model;
           return client.request("thread/resume", resumeParams);
         };
+        const resumeSelectedThread = async () => {
+          try { return await resumeThread(); }
+          catch (error) {
+            if (options.threadExplicit && isThreadNotFoundError(error)) throw missingThreadSelector(options.thread);
+            throw error;
+          }
+        };
+        let response;
         try {
-          const response = await readThreadWithRetry(client, { threadId, includeTurns: true });
-          return threadIsNotLoaded(response) ? resumeThread() : response;
+          response = await readThreadWithRetry(client, { threadId, includeTurns: true });
         }
         catch {
-          return resumeThread();
+          return resumeSelectedThread();
         }
+        return threadIsNotLoaded(response) ? resumeSelectedThread() : response;
       };
       const beforeStart = await readOrResumeThread();
       const activeTurns = beforeStart.thread.turns.filter((turn) => turn.status === "inProgress");
@@ -3031,6 +3538,7 @@ async function main() {
           await client.request("turn/interrupt", { threadId, turnId: turn.id });
         }
       }
+      if (!options.threadExplicit) await saveThread(options.state, threadId, options.clearModel ? undefined : options.model);
     }
     for (;;) {
       const turnStartParams = {
@@ -3045,7 +3553,12 @@ async function main() {
       lastTurnError = undefined;
       terminalTurnError = undefined;
       terminalTurnRequiresInterrupt = false;
-      const turnResponse = await client.request("turn/start", turnStartParams);
+      let turnResponse;
+      try { turnResponse = await client.request("turn/start", turnStartParams); }
+      catch (error) {
+        if (!options.new && options.threadExplicit && isThreadNotFoundError(error)) throw missingThreadSelector(options.thread);
+        throw error;
+      }
       targetTurnId = turnResponse.turn.id;
       debug(options, `started turn ${targetTurnId} in thread ${threadId}${!options.direct && options.approval !== "decline" ? " with approvalPolicy=never" : ""}`);
       progress.start();
@@ -3072,6 +3585,7 @@ async function main() {
           throw terminalCodexError(terminalTurnError);
         }
         if (turn?.status === "completed") {
+          if (!options.direct && options.threadSwitchExplicit) await saveThread(options.state, threadId, options.clearModel ? undefined : options.model);
           for (const item of turn.items ?? []) renderer.item(item, "completed");
           if (options.agenticErrorCode) emitAgenticResult(options, finalAgentMessage(turn));
           break;
@@ -3100,7 +3614,7 @@ async function main() {
       try { currentPrompt = (await terminal.question("codex-cli> ")).trim(); } finally { terminal.close(); }
       if (!currentPrompt || currentPrompt === "/exit") break;
       currentPromptParts = promptPartsFor(currentPrompt, false);
-      currentInput = await resolvePromptInput(currentPromptParts, options.images, options.cwd);
+      currentInput = await resolvePromptInput(currentPromptParts, options.images, options.cwd, { statePath: options.state });
       for (const filePath of currentInput.temporaryPaths) temporaryAttachments.add(filePath);
     }
   } catch (error) {

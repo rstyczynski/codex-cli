@@ -33,6 +33,12 @@ test("CLI rejects invalid options and incompatible modes", async () => {
     { args: ["--direct", "prompt"], error: /use --new for each direct invocation/ },
     { args: ["--direct", "--new", "--socket", "server.sock", "prompt"], error: /cannot be used together/ },
     { args: ["--thread", "thread-1", "--new", "prompt"], error: /cannot be used together/ },
+    { args: ["--thread", "thread-1", "--thread-switch", "thread-2", "prompt"], error: /--thread and --thread-switch cannot be combined/ },
+    { args: ["--broker", "start", "--thread-switch", "thread-1", "prompt"], error: /--broker start cannot be combined/ },
+    { args: ["--broker", "threads", "--thread-label", "ignored", "prompt"], error: /--broker threads cannot be combined/ },
+    { args: ["--broker", "status", "--current-thread"], error: /--broker status cannot be combined/ },
+    { args: ["--current-thread", "--thread", "thread-1"], error: /--current-thread cannot be combined/ },
+    { args: ["--current-thread", "--new"], error: /--current-thread cannot be combined/ },
     { args: ["--repl", "--new", "prompt"], error: /requires --direct/ },
     { args: ["--direct", "--repl", "--new", "prompt"], error: /requires a terminal/ },
     { args: ["--direct", "--new", "--model", "one", "--clear-model", "prompt"], error: /cannot be used together/ },
@@ -69,10 +75,18 @@ test("CLI rejects invalid options and incompatible modes", async () => {
   assert.match(result.stderr, /not a directory/);
 });
 
+test("a closed stderr pipe does not erase a CLI failure status", () => {
+  const result = spawnSync("bash", ["--noprofile", "--norc", "-o", "pipefail", "-c",
+    `"$1" "$2" --thread one --thread-switch two prompt 2>&1 | awk 'BEGIN { exit }'`,
+    "codex-cli-epipe", process.execPath, cli,
+  ], { encoding: "utf8", timeout: 10000 });
+  assert.equal(result.status, 2, result.stderr);
+});
+
 test("CLI version exits successfully without requiring a workspace or Codex", () => {
   const result = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8", timeout: 10000 });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "codex-cli 1.0.13\n");
+  assert.equal(result.stdout, "codex-cli 1.1.0\n");
   assert.equal(result.stderr, "");
 });
 
@@ -91,6 +105,27 @@ test("CLI reports invalid state and configuration files", async () => {
   result = invoke(workspace, ["--direct", "--new", "--config-json", config, "--thread-params", '{"config":"invalid"}', "prompt"]);
   assert.equal(result.status, 2);
   assert.match(result.stderr, /config must be a JSON object/);
+});
+
+test("current-thread prints only the saved workspace thread ID", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli current thread "));
+  const stateDirectory = path.join(workspace, ".codex-cli");
+  await mkdir(stateDirectory);
+  await writeFile(path.join(stateDirectory, "codex-cli.json"), '{"threadId":"saved-thread"}\n', "utf8");
+
+  let result = invoke(workspace, ["--current-thread"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "saved-thread\n");
+  assert.equal(result.stderr, "");
+
+  result = invoke(workspace, ["--current-thread", "a prompt"]);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /cannot be combined with a prompt/);
+
+  const empty = await mkdtemp(path.join(os.tmpdir(), "codex cli absent current thread "));
+  result = invoke(empty, ["--current-thread"]);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /no saved thread found/);
 });
 
 test("broker control commands report a broker that is not running", async () => {

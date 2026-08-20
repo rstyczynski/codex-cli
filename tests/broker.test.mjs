@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
@@ -130,15 +130,16 @@ function brokerExchange(socketPath, payload) {
 test("broker persists a thread across CLI calls and logs approvals", async (t) => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker test "));
+  const longThreadTitle = `${"full-thread-title-".repeat(8)}tail`;
   t.after(() => invoke(workspace, "--broker", "stop"));
 
   let result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /codex-cli v1\.0\.13 — ready/);
+  assert.match(result.stderr, /codex-cli v1\.1\.0 — ready/);
   assert.match(result.stderr, /broker started/);
   assert.equal((await stat(path.join(workspace, "broker.sock"))).mode & 0o777, 0o600);
 
-  result = invoke(workspace, "--broker", "--approval", "accept", "--approval-log", "approvals.toml", "--prompt", "first");
+  result = invoke(workspace, "--broker", "--approval", "accept", "--approval-log", "approvals.toml", "--thread-label", longThreadTitle, "--prompt", "first");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /reply 1: first/);
   assert.match(result.stderr, /started thread thread-1/);
@@ -153,6 +154,7 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^ID\tSTATUS\tARCHIVED\tCREATED\tUPDATED\tCWD\tTITLE$/m);
   assert.match(result.stdout, /^thread-1\t/m);
+  assert.ok(result.stdout.includes(longThreadTitle), "the text thread listing must not truncate its selector label");
 
   result = invoke(workspace, "--broker", "threads", "--json");
   assert.equal(result.status, 0, result.stderr);
@@ -246,7 +248,15 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   result = invoke(workspace, "--broker", "status");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /"ready": true/);
-  assert.deepEqual(JSON.parse(result.stdout).capabilities, ["agentic-result-v1", "image-attachments-v1", "prompt-attachment-actions-v1"]);
+  assert.deepEqual(new Set(JSON.parse(result.stdout).capabilities), new Set([
+    "agentic-result-v1",
+    "image-attachments-v1",
+    "prompt-attachment-actions-v1",
+    "thread-selectors-v1",
+    "thread-label-v1",
+    "turn-commit-ack-v1",
+    "thread-id-action-context-v1",
+  ]));
 
   result = invoke(workspace, "--broker", "stop");
   assert.equal(result.status, 0, result.stderr);
@@ -395,7 +405,7 @@ test("broker cleans up after app-server crash and can restart", async (t) => {
   result = invoke(workspace, "--broker", "--new", "--timeout", "5", "--prompt", "crash app server");
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /broker app-server exited unexpectedly; restart the broker/);
-  assert.match(result.stderr, /fake app-server crash diagnostic/);
+  assert.doesNotMatch(result.stderr, /fake app-server crash diagnostic/);
   assert.doesNotMatch(result.stderr, /broker connection closed before completion/);
   assert.match(await readFile(path.join(workspace, "broker.pid.stderr.log"), "utf8"), /app-server exited unexpectedly \(exit code 7\)/);
   await new Promise((resolve) => setTimeout(resolve, 200));
@@ -507,6 +517,11 @@ test("broker identifies an incompatible upstream model cache in retained diagnos
   assert.equal(result.status, 0, result.stderr);
   result = invoke(workspace, "--broker", "--new", "crash app server");
   assert.equal(result.status, 2, result.stderr);
+  assert.doesNotMatch(result.stderr, /broker diagnostics|missing field `base_instructions`|incompatible model cache/i);
+  result = invokeWithEnv(workspace, { FAKE_CODEX_POST_READY_STDERR: diagnostic }, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--diagnostics", "--broker", "--new", "crash app server");
+  assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /broker diagnostics:.*missing field `base_instructions`/s);
   assert.match(result.stderr, /Codex has an incompatible model cache\. Quit Codex, then rename ~\/\.codex\/models_cache\.json and restart the broker\./);
 });
@@ -524,8 +539,8 @@ test("broker automatically recovers an implicit vanished saved thread", async (t
   assert.match(result.stdout, /reply 1: missing turn thread/);
   assert.match(result.stderr, /started thread thread-2/);
   result = invoke(workspace, "--broker", "--thread", "thread-1", "--prompt", "missing turn thread");
-  assert.equal(result.status, 2, result.stderr);
-  assert.match(result.stderr, /thread not found in this broker instance.*use --new/);
+  assert.equal(result.status, 66, result.stderr);
+  assert.match(result.stderr, /no Codex thread matches selector/);
 });
 
 test("broker resumes an explicit not-loaded thread by id", async (t) => {
@@ -535,13 +550,166 @@ test("broker resumes an explicit not-loaded thread by id", async (t) => {
   let result = invoke(workspace, "--broker", "start");
   assert.equal(result.status, 0, result.stderr);
 
-  result = invoke(workspace, "--broker", "--thread", "not-loaded-thread-1", "--prompt", "attach by id");
+  const notLoadedThreadId = "01900000-0000-7000-8000-000000000001";
+  result = invoke(workspace, "--broker", "--thread", notLoadedThreadId, "--prompt", "attach by id");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /reply 1: attach by id/);
 
   const trace = await readTrace(workspace);
-  assert.ok(trace.some((message) => message.method === "thread/resume" && message.params.threadId === "not-loaded-thread-1"));
-  assert.ok(trace.some((message) => message.method === "turn/start" && message.params.threadId === "not-loaded-thread-1"));
+  assert.ok(trace.some((message) => message.method === "thread/resume" && message.params.threadId === notLoadedThreadId));
+  assert.ok(trace.some((message) => message.method === "turn/start" && message.params.threadId === notLoadedThreadId));
+
+  const resumeErrorThreadId = "01900000-0000-7000-8000-000000000002";
+  result = invoke(workspace, "--broker", "--thread", resumeErrorThreadId, "--prompt", "propagate resume failure");
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /simulated resume backend failure/);
+  assert.doesNotMatch(result.stderr, /no Codex thread matches selector/);
+  const failedTrace = await readTrace(workspace);
+  assert.equal(failedTrace.filter((message) => message.method === "thread/resume" && message.params.threadId === resumeErrorThreadId).length, 1, "a non-not-found resume error must be propagated without a second attempt");
+});
+
+test("broker resolves thread labels deterministically and reports stable selector errors", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker thread selectors "));
+  const statePath = path.join(workspace, ".codex-cli", "codex-cli.json");
+  t.after(() => invoke(workspace, "--broker", "stop"));
+  let result = invoke(workspace, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "Exact target", "seed exact thread");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "Other target", "Discuss Exact target notes");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
+
+  result = invoke(workspace, "--broker", "--thread", "Exact target", "selected exact native name");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 2: selected exact native name/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2", "an exact-name one-off must not switch saved state");
+
+  result = invoke(workspace, "--broker", "--thread", "Exact target notes", "hidden preview must not select a named thread");
+  assert.equal(result.status, 66, result.stderr);
+  assert.match(result.stderr, /no (?:Codex )?thread matches/i);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
+
+  result = invoke(workspace, "--broker", "--thread", "thread", "ambiguous id prefix");
+  assert.equal(result.status, 65, result.stderr);
+  assert.match(result.stderr, /ambiguous/i);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
+
+  result = invoke(workspace, "--broker", "--thread", "selector that does not exist", "unmatched selector");
+  assert.equal(result.status, 66, result.stderr);
+  assert.match(result.stderr, /no (?:Codex )?thread matches/i);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
+
+  result = invoke(workspace, "--broker", "--thread", "   ", "blank selector");
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /thread selector|--thread.*empty|no (?:Codex )?thread matches/i);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
+
+  result = invoke(workspace, "--broker", "--new", "Discuss Exact target notes");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--thread", "Exact target", "exact label beats visible fragment");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /exact label beats visible fragment/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-3", "exact-label one-off selection must preserve current state");
+
+  result = invoke(workspace, "--broker", "--thread", "target", "ambiguous displayed-label fragment");
+  assert.equal(result.status, 65, result.stderr);
+  assert.match(result.stderr, /ambiguous/i);
+
+  result = invoke(workspace, "--broker", "--new", "Exact target");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--thread", "Exact target", "ambiguous displayed label");
+  assert.equal(result.status, 65, result.stderr);
+  assert.match(result.stderr, /ambiguous/i);
+
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "thread-404", "non-UUID-shaped label");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--thread", "thread-404", "select non-UUID-shaped label");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /select non-UUID-shaped label/);
+
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "Duplicate label", "first duplicate");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "Duplicate label", "second duplicate");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--thread", "Duplicate label", "ambiguous exact label");
+  assert.equal(result.status, 65, result.stderr);
+  assert.match(result.stderr, /ambiguous/i);
+});
+
+test("thread selectors from configuration and environment retain one-off and switch semantics", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker selector sources "));
+  const statePath = path.join(workspace, ".codex-cli", "codex-cli.json");
+  const oneOffConfig = path.join(workspace, "one-off.json");
+  const switchConfig = path.join(workspace, "switch.json");
+  t.after(() => invoke(workspace, "--broker", "stop"));
+  let result = invoke(workspace, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "Configuration target", "configuration target seed");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "Saved target", "saved target seed");
+  assert.equal(result.status, 0, result.stderr);
+  await writeFile(oneOffConfig, JSON.stringify({ thread: "Configuration target" }), "utf8");
+  await writeFile(switchConfig, JSON.stringify({ threadSwitch: "Configuration target" }), "utf8");
+
+  result = invoke(workspace, "--config", oneOffConfig, "--broker", "configuration one-off");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 2: configuration one-off/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
+
+  result = invokeWithEnv(workspace, { CDXCLI_THREAD: "Configuration target" }, "--broker", "environment one-off");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 3: environment one-off/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
+
+  result = invoke(workspace, "--config", switchConfig, "--broker", "configuration switch");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 4: configuration switch/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-1");
+
+  result = invokeWithEnv(workspace, { CDXCLI_THREAD_SWITCH: "Configuration target" }, "--broker", "--thread", "Saved target", "CLI one-off overrides environment switch");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 2: CLI one-off overrides environment switch/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-1");
+
+  result = invokeWithEnv(workspace, { CDXCLI_THREAD_SWITCH: "Saved target" }, "--broker", "environment switch");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reply 3: environment switch/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
+});
+
+test("thread label failures preserve completed switch semantics", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker deferred label "));
+  const statePath = path.join(workspace, ".codex-cli", "codex-cli.json");
+  t.after(() => invoke(workspace, "--broker", "stop"));
+  let result = invoke(workspace, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "Stable label", "stable label seed");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "Saved label", "saved label seed");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2");
+
+  result = invoke(workspace, "--broker", "--thread-switch", "Stable label", "--thread-label", "Rejected label", "failed turn");
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /simulated turn failure/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-2", "a failed turn must not persist its requested switch");
+
+  result = invoke(workspace, "--broker", "--thread-switch", "Stable label", "--thread-label", "Rejected label", "completed turn before label failure");
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /simulated thread label failure/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-1", "a completed turn must persist its switch before a later label failure");
+
+  result = invoke(workspace, "--broker", "--thread", "Stable label", "old label remains usable");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /old label remains usable/);
+  result = invoke(workspace, "--broker", "--thread", "Rejected label", "new label was not applied");
+  assert.equal(result.status, 66, result.stderr);
 });
 
 test("broker waits out a transient interrupted thread read", async (t) => {
@@ -651,6 +819,62 @@ test("image attachments reject a broker that lacks image capability", async (t) 
   assert.match(result.stderr, /running broker does not support --image/);
   assert.match(result.stderr, /broker stop.*broker start/);
   assert.equal(runRequests, 0, "the client must reject the stale broker before submitting an image turn");
+});
+
+test("thread selectors and labels reject brokers that lack their advertised capabilities", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli legacy thread broker "));
+  const socketPath = path.join(workspace, "broker.sock");
+  let capabilities = ["agentic-result-v1", "image-attachments-v1", "prompt-attachment-actions-v1"];
+  let runRequests = 0;
+  let threadListRequests = 0;
+  const server = net.createServer((socket) => {
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) return;
+      const message = JSON.parse(buffer.slice(0, newline));
+      if (message.type === "run") runRequests += 1;
+      if (message.type === "threads") threadListRequests += 1;
+      socket.end(`${JSON.stringify({ version: 1, type: "status", ready: true, pid: process.pid, instanceId: "legacy", active: false, capabilities })}\n`);
+    });
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  let result = await invokeAsync(workspace, "--broker", "--completion-threads").done;
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(threadListRequests, 0, "completion must not send its extended list request to an older broker");
+
+  await mkdir(path.join(workspace, ".codex-cli"), { recursive: true });
+  await writeFile(path.join(workspace, ".codex-cli", "codex-cli.json"), '{"threadId":"saved-thread"}\n', "utf8");
+  result = await invokeAsync(workspace, "--broker", "--new", "--prompt", "reference <thread_id>").done;
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /does not support client-state <thread_id> expansion/);
+  assert.match(result.stderr, /broker stop.*broker start/);
+  assert.equal(runRequests, 0, "the client must not send a state-dependent prompt action to an older broker");
+
+  result = await invokeAsync(workspace, "--broker", "--thread", "Some label", "--prompt", "selector capability").done;
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /running broker does not support thread selectors/);
+  assert.match(result.stderr, /broker stop.*broker start/);
+  assert.equal(runRequests, 0, "the client must reject an unsupported selector before submitting a turn");
+
+  capabilities = [...capabilities, "thread-selectors-v1"];
+  result = await invokeAsync(workspace, "--broker", "--new", "--thread-label", "New label", "--prompt", "label capability").done;
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /running broker does not support --thread-label/);
+  assert.match(result.stderr, /broker stop.*broker start/);
+  assert.equal(runRequests, 0, "the client must reject an unsupported label before submitting a turn");
+
+  capabilities = [...capabilities, "thread-label-v1"];
+  result = await invokeAsync(workspace, "--broker", "--thread-switch", "Some label", "--thread-label", "New label", "--prompt", "atomic switch capability").done;
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /cannot preserve a completed --thread-switch across a label failure/);
+  assert.match(result.stderr, /broker stop.*broker start/);
+  assert.equal(runRequests, 0, "the client must reject a combined switch and label when atomic commit is unsupported");
 });
 
 test("broker carries agentic outcomes without masking broker or app-server failures", async (t) => {

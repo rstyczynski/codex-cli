@@ -20,6 +20,7 @@ example only inspects configuration and does not contact Codex.
 | Quick introduction | [`intro.sh`](intro.sh) | Complete automation-friendly workflow |
 | Broker mode | [`broker-mode.sh`](broker-mode.sh) | Start, continue, inspect, and clean up a broker |
 | Threads | [`threads.sh`](threads.sh) | Create, list, and explicitly select threads |
+| Saved thread references | [`thread-references.sh`](thread-references.sh) | Create two IDs, insert the saved one, and verify distinct one-off state |
 | Approvals and user input | [`approvals-and-user-input.sh`](approvals-and-user-input.sh) | `hiai` broker approvals, audit log, and interactive questions |
 | Client configuration | [`layered-config.sh`](layered-config.sh) | Inspect automatic files, overlays, environment, and CLI precedence |
 | Environment overrides | [`env-config.sh`](env-config.sh) | Configure a run with `CDXCLI_*` variables |
@@ -31,7 +32,7 @@ example only inspects configuration and does not contact Codex.
 | Input and output | [`input-and-output.sh`](input-and-output.sh) | Positional, flag, stdin, interim verbosity, spinner, and JSONL forms |
 | Direct mode | [`direct-mode.sh`](direct-mode.sh) | Isolated app-server turn and optional REPL |
 | Existing app-server socket | [`existing-socket.sh`](existing-socket.sh) | Connect to a socket owned by another process |
-| Bash completion | [`bash-completion.sh`](bash-completion.sh) | Complete options, models, and registered prompt-action tokens |
+| Bash completion | [`bash-completion.sh`](bash-completion.sh) | Complete options, models, thread selectors, and registered prompt-action tokens |
 | Local files and lifecycle | [`local-files-and-lifecycle.sh`](local-files-and-lifecycle.sh) | State files, saved-thread rejoin, and safe broker restart/cleanup |
 | Exit behavior | [`exit-behavior.sh`](exit-behavior.sh) | Separate agent outcomes from system failures |
 

@@ -23,11 +23,12 @@ codex-cli --broker threads
 printf '\nThreads (one JSON object per line):\n'
 codex-cli --broker threads --json
 
-# Pass an ID printed above to demonstrate strict explicit selection:
+# Pass an ID printed above to demonstrate strict, one-off selection. The saved
+# current thread does not change; use --thread-switch when that is desired.
 #   ./examples/threads.sh 019abc...
 if (( $# > 0 )); then
   codex-cli --broker --thread "$1" --timeout 120 \
     "Reply with the label you were asked to remember."
 else
-  printf '\nPass a thread ID as the first argument to continue it explicitly.\n'
+  printf '\nPass a thread ID as the first argument for a one-off prompt in it.\n'
 fi

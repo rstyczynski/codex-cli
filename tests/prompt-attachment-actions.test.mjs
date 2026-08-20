@@ -85,6 +85,40 @@ test("clipboard text action preserves prompt ordering across direct and broker t
   assert.doesNotMatch(state, /clipboard secret/);
 });
 
+test("thread_id action inserts the saved thread ID across direct and broker transports", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli conversation id action "));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  t.after(() => invokeBroker(workspace, ["--broker", "stop"]));
+  const statePath = path.join(workspace, ".codex-cli", "codex-cli.json");
+  const customStatePath = path.join(workspace, "custom-thread-state.json");
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await writeFile(statePath, '{"threadId":"wrong-default-conversation-id"}\n', "utf8");
+  await writeFile(customStatePath, '{"threadId":"saved-conversation-id"}\n', "utf8");
+
+  let result = invoke(workspace, ["--state", customStatePath, "--direct", "--new", "before <thread_id> after"]);
+  assert.equal(result.status, 0, result.stderr);
+  let turn = (await readTrace(workspace)).find((entry) => entry.method === "turn/start");
+  assert.deepEqual(turn.params.input, [
+    { type: "text", text: "before ", text_elements: [] },
+    { type: "text", text: "saved-conversation-id", text_elements: [] },
+    { type: "text", text: " after", text_elements: [] },
+  ]);
+
+  await rm(path.join(workspace, "fake-codex-trace.jsonl"));
+  await writeFile(customStatePath, '{"threadId":"saved-conversation-id"}\n', "utf8");
+  result = invokeBroker(workspace, ["--broker", "start"]);
+  assert.equal(result.status, 0, result.stderr);
+  result = invokeBroker(workspace, ["--state", customStatePath, "--broker", "--new", "before <thread_id> after"]);
+  assert.equal(result.status, 0, result.stderr);
+  turn = (await readTrace(workspace)).find((entry) => entry.method === "turn/start");
+  assert.deepEqual(turn.params.input, [
+    { type: "text", text: "before ", text_elements: [] },
+    { type: "text", text: "saved-conversation-id", text_elements: [] },
+    { type: "text", text: " after", text_elements: [] },
+  ]);
+});
+
 test("clipboard image action survives asynchronous app-server loading and is removed at client or broker exit", async (t) => {
   await Promise.all([chmod(fakeCodex, 0o755), chmod(fakeClipboard, 0o755)]);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "codex cli clipboard image "));

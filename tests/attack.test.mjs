@@ -365,9 +365,10 @@ test("A-11 broker surfaces app-server system errors and stale explicit threads",
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /Codex thread entered systemError/);
 
-  result = invokeBroker(workspace, ["--broker", "--thread", "missing-thread", "continue"]);
-  assert.equal(result.status, 2, result.stderr);
-  assert.match(result.stderr, /thread not found in this broker instance: missing-thread; use --new/);
+  const missingThreadId = "01900000-0000-7000-8000-000000000000";
+  result = invokeBroker(workspace, ["--broker", "--thread", missingThreadId, "continue"]);
+  assert.equal(result.status, 66, result.stderr);
+  assert.match(result.stderr, new RegExp(`no Codex thread matches selector: "${missingThreadId}"`));
 });
 
 test("A-12 handles hostile WebSocket upgrades, frames, and connection closure", async (t) => {

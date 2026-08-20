@@ -214,7 +214,7 @@ test("progress spinner advances only when an event advances it and clears cleanl
 test("welcome banner writes only to an interactive terminal and excludes machine-readable modes", () => {
   const writes = [];
   showWelcomeBanner({ json: false, agenticErrorCode: false }, { isTTY: true, write: (chunk) => writes.push(chunk) });
-  assert.deepEqual(writes, ["codex-cli v1.0.13 — ready\n"]);
+  assert.deepEqual(writes, ["codex-cli v1.1.0 — ready\n"]);
 
   for (const options of [{ json: true, agenticErrorCode: false }, { json: false, agenticErrorCode: true }]) {
     const suppressed = [];
@@ -224,5 +224,5 @@ test("welcome banner writes only to an interactive terminal and excludes machine
 
   const brokerStart = [];
   showWelcomeBanner({ json: true, agenticErrorCode: true }, { isTTY: false, write: (chunk) => brokerStart.push(chunk) }, true);
-  assert.deepEqual(brokerStart, ["codex-cli v1.0.13 — ready\n"]);
+  assert.deepEqual(brokerStart, ["codex-cli v1.1.0 — ready\n"]);
 });

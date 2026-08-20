@@ -36,7 +36,7 @@ end-to-end introduction:
 
 ```bash
 export PATH="$PWD/bin:$PATH"
-source <(codex-cli --bash-completion)
+eval "$(codex-cli --bash-completion)"
 ./examples/intro.sh
 ```
 
@@ -70,7 +70,7 @@ from the repository root:
 
 ```bash
 export PATH="$PWD/bin:$PATH"
-source <(codex-cli --bash-completion)
+eval "$(codex-cli --bash-completion)"
 ```
 
 This makes `codex-cli`, `cdx`, and `hiai` available in this Bash session; it
@@ -135,8 +135,49 @@ Use the same directory context (or the same `--cwd`) for `status`, `threads`, an
 
 The selected thread is durable workspace state. After a broker restart, the
 next implicit prompt rejoins it; the CLI never silently replaces it with a new
-conversation. An explicit `--thread THREAD_ID` is strict: it reports a missing
-thread rather than silently switching to another conversation.
+conversation. `--thread SELECTOR` sends one prompt to another thread without
+changing this saved selection. `--thread-switch SELECTOR` sends one prompt and
+makes that thread the saved current conversation only after the turn completes.
+These rules are the same for command-line, environment, and JSON-configuration
+values, and in broker and socket transports. Both are strict: a missing or
+ambiguous explicit selector fails rather than creating or choosing a thread.
+`--thread-label LABEL` sets the native Codex name on the selected thread. It
+works with `--new`, `--thread`, `--thread-switch`, or the saved current thread.
+Native naming is broker-capability-gated; restart an older broker when the CLI
+reports that it does not support thread labels. The name is committed only
+after the associated turn completes.
+
+Here, "completes" means that the Codex protocol turn reaches its `completed`
+state. A switch or label is therefore committed before agentic-output
+validation: it remains committed when a valid result maps to a nonzero outcome
+or when a completed payload later fails contract validation. Failed,
+interrupted, or timed-out protocol turns do not commit it.
+When `--thread-switch` and `--thread-label` are combined, the completed turn
+commits the switch before the naming request. If naming then fails, the command
+reports that error but does not roll back the saved current thread.
+
+Print the saved thread ID without parsing the state file yourself:
+
+```bash
+codex-cli --broker --current-thread
+```
+
+To include that same value inside a prompt, use `<thread_id>` at the desired
+location. It uses the invoking client's resolved state file, including an
+explicit `--state PATH`, and is expanded before Codex receives the turn:
+
+```bash
+codex-cli --broker --prompt 'Continue the discussion identified by <thread_id>.'
+```
+
+The runnable [`thread-references.sh`](examples/thread-references.sh) example
+captures one full ID, creates a distinct saved-current thread, expands that
+saved ID in a prompt, then targets the older ID once and verifies that the new
+saved selection remains unchanged:
+
+```bash
+./examples/thread-references.sh
+```
 
 ### Conversation recovery
 
@@ -153,8 +194,47 @@ To join a particular saved thread explicitly, use the thread ID printed in the
 crash message or stored in `.codex-cli/codex-cli.json`:
 
 ```bash
-hiai --thread THREAD_ID "Continue our previous conversation."
+hiai --thread THREAD_ID "Ask a one-off question in another conversation."
+hiai --thread-switch THREAD_ID "Continue this conversation from now on."
+hiai --new --thread-label "Sprint 18" "Start the sprint discussion."
+hiai --thread "Sprint 18" "Ask a one-off question in the sprint discussion."
 ```
+
+Both thread selectors accept a full UUID, a unique UUID prefix, a native thread
+name, a fallback preview, or a unique label fragment. A thread's full displayed
+selector label is its whitespace-normalized native name when present, otherwise
+its whitespace-normalized preview; a native name therefore hides that thread's
+older preview. Label and UUID-prefix matching is case-insensitive. Resolution
+has stable precedence: full UUID, exact displayed label, unique UUID prefix,
+then unique displayed-label fragment. An ambiguous selector exits `65`; a
+missing or stale selector exits `66`; an empty selector is command-usage error
+`2`, mapped to system-error status `70` when `--agentic-error-code` is active.
+
+Use the full UUID from `--current-thread` or `--broker threads --json` in Bash
+scripts. Labels, UUID prefixes, and label fragments are interactive
+conveniences and can become ambiguous as the catalog changes. Quote every
+operator-supplied selector so it remains one shell argument:
+
+```bash
+codex-cli --thread "$thread_id" 'Run one prompt without changing saved state.'
+codex-cli --thread-switch "$thread_id" 'Run one prompt, then save this thread.'
+```
+
+In JSON configuration, use `thread` for one-off targeting, `threadSwitch` for a
+persistent switch, or `new: true` to create a conversation. Their environment
+equivalents are `CDXCLI_THREAD`, `CDXCLI_THREAD_SWITCH`, and `CDXCLI_NEW`. These
+three values form one selection-mode family: one configuration object, the
+environment, or one command line may select only one of them, while a
+higher-precedence source replaces a lower-precedence selection mode.
+
+A native label is only thread-selection metadata. It does not validate or
+rewrite the thread's stored conversation history or summary. If a label and
+the conversation content disagree, selecting the UUID produces the same
+underlying conversation; inspect the thread rather than treating its label as
+a context-integrity check.
+
+Broker failures show only their direct error by default. Add `--diagnostics`
+when troubleshooting to include the broker's retained Codex stderr tail.
 
 If the app-server dies while a broker turn is active, `codex-cli` additionally writes
 `.codex-cli/procedure-crash.json` and an append-only
@@ -172,7 +252,9 @@ the broker instance that it started.
 Broker mode can list every non-deleted thread visible in the local Codex thread
 database, including archived and non-broker threads. The default output is
 tab-separated and sorted by creation time from oldest to newest; JSONL output
-is also available. A thread ID may be passed explicitly for strict selection.
+is also available. Its `TITLE` column shows the full normalized selector label
+used by label matching: the native name when present, otherwise the preview. A
+thread ID may be passed explicitly for strict selection.
 
 ```bash
 ./examples/threads.sh
@@ -495,8 +577,10 @@ exactly twice: first `--mime`, then `--text` or `--binary` for that MIME type.
 It does not execute shell substitutions, commands, or arbitrary angle-bracket
 content.
 
-Only `<clipboard>` is currently supported. Markers that match the action form
-`<[a-z][a-z0-9-]*>` but are not registered fail locally before clipboard,
+`<thread_id>` inserts the saved workspace thread ID as text at its exact
+position in the prompt. It fails locally if no saved thread exists. Only
+`<clipboard>` and `<thread_id>` are supported. Markers that match the action form
+`<[a-z][a-z0-9_-]*>` but are not registered fail locally before clipboard,
 broker, or Codex access. Clipboard image bytes are stored only in an
 owner-only `.codex-cli/session/clipboard-*` file. Direct and socket clients
 remove it when they exit; a broker retains it until the broker exits, so the
@@ -572,15 +656,28 @@ codex-cli --socket '\\.\pipe\codex-app-server' --new "Review the current change"
 After putting `bin/` on `PATH`, enable completion in the current Bash shell:
 
 ```bash
-source <(codex-cli --bash-completion)
+eval "$(codex-cli --bash-completion)"
 ```
 
-To enable it in every new Bash shell, add that `source` command to `~/.bashrc`,
-then reload the file:
+The `eval` form also works with the Bash 3.2 shipped by macOS, where sourcing
+process substitution can yield an unreadable `/dev/fd` path. To enable
+completion without evaluating generated output in every new shell, save it to
+a regular file:
+
+```bash
+mkdir -p "$HOME/.codex-cli"
+codex-cli --bash-completion > "$HOME/.codex-cli/bash-completion.sh"
+```
+
+Add `source "$HOME/.codex-cli/bash-completion.sh"` to `~/.bashrc`, then reload
+the file:
 
 ```bash
 source ~/.bashrc
 ```
+
+Regenerate the completion file after upgrading or moving `codex-cli`, because
+it records the executable path used to produce it.
 
 Completion is now available under every command name. For example, type one of
 these commands and press Tab at `<Tab>`:
@@ -599,7 +696,25 @@ registered completion definitions:
 ./examples/bash-completion.sh
 ```
 
-It registers the same completion for `codex-cli`, `cdx`, and `hiai`, covering options, broker actions, file arguments, approval modes, models, and every registered prompt-action token. Model completion first uses Codex's local catalog cache and falls back to the local app-server when necessary. The model result is cached in Bash for 30 seconds.
+It registers the same completion for `codex-cli`, `cdx`, and `hiai`, covering
+options, broker actions, file arguments, approval modes, models, available
+broker threads, and every registered prompt-action token. Thread completion
+uses the command's implicit workspace and queries only an already-running
+compatible broker; pressing Tab never starts one. A lookup has a one-second
+total deadline and its result is cached in the current Bash process for three
+seconds. It offers at most the 50 most recently created non-archived threads,
+so completion is a convenient recent-thread view rather than the complete
+catalog exposed by `--broker threads`.
+
+A label completion is quoted so Bash passes it as one argument. Duplicate
+labels complete to their unambiguous IDs, and an ID-prefix completion remains
+an ID rather than being replaced with a possibly duplicated label. When
+several labels share a prefix, continue typing inside the completed quoted
+prefix and press Tab again; the result remains one selector argument. The
+actual selectors accept full UUIDs, unique UUID prefixes, exact labels, and
+unique label fragments. Model completion first uses Codex's local catalog
+cache and falls back to the local app-server when necessary. The model result
+is cached in Bash for 30 seconds.
 
 After sourcing, completion is registered for `codex-cli`, `cdx`, and `hiai`.
 When a name is not installed or present on `PATH`, the sourced code also

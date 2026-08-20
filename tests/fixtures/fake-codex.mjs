@@ -4,8 +4,25 @@ import { appendFileSync, readFileSync } from "node:fs";
 
 const threads = new Map();
 const approvals = new Map();
+const NOT_LOADED_THREAD_ID = "01900000-0000-7000-8000-000000000001";
+const RESUME_ERROR_THREAD_ID = "01900000-0000-7000-8000-000000000002";
 let nextThread = 1;
 let nextTurn = 1;
+
+for (const [index, seed] of JSON.parse(process.env.FAKE_CODEX_THREADS_JSON ?? "[]").entries()) {
+  const thread = {
+    cwd: process.cwd(),
+    turns: [],
+    status: { type: "idle" },
+    createdAt: index + 1,
+    updatedAt: index + 1,
+    ...seed,
+  };
+  threads.set(thread.id, thread);
+  nextThread = Math.max(nextThread, index + 2);
+  const numericId = /^thread-(\d+)$/.exec(thread.id)?.[1];
+  if (numericId) nextThread = Math.max(nextThread, Number(numericId) + 1);
+}
 
 function send(message) { process.stdout.write(`${JSON.stringify(message)}\n`); }
 function response(id, result) { send({ jsonrpc: "2.0", id, result }); }
@@ -91,13 +108,15 @@ input.on("line", (line) => {
     nextCursor: null,
   });
   if (method === "thread/start") {
-    const thread = { id: `thread-${nextThread++}`, cwd: params.cwd, turns: [], status: { type: "idle" } };
+    const sequence = nextThread++;
+    const thread = { id: `thread-${sequence}`, cwd: params.cwd, turns: [], status: { type: "idle" }, createdAt: sequence, updatedAt: sequence };
     threads.set(thread.id, thread);
     return response(id, { thread });
   }
   if (method === "thread/resume") {
+    if (params.threadId === RESUME_ERROR_THREAD_ID) return send({ jsonrpc: "2.0", id, error: { code: -32000, message: "simulated resume backend failure" } });
     let thread = threads.get(params.threadId);
-    if (!thread && (params.threadId?.startsWith("not-loaded-") || (process.env.FAKE_CODEX_RESUME_THREADS === "1" && params.threadId?.startsWith("thread-")))) {
+    if (!thread && (params.threadId === NOT_LOADED_THREAD_ID || params.threadId?.startsWith("not-loaded-") || (process.env.FAKE_CODEX_RESUME_THREADS === "1" && params.threadId?.startsWith("thread-")))) {
       thread = { id: params.threadId, cwd: params.cwd, turns: [], status: { type: "idle" } };
       threads.set(thread.id, thread);
     }
@@ -106,7 +125,10 @@ input.on("line", (line) => {
   }
   if (method === "thread/read") {
     const thread = threads.get(params.threadId);
-    if (!thread && params.threadId?.startsWith("not-loaded-")) {
+    if (!thread && params.threadId === RESUME_ERROR_THREAD_ID) {
+      return response(id, { thread: { id: params.threadId, cwd: params.cwd, turns: [], status: { type: "notLoaded" } } });
+    }
+    if (!thread && (params.threadId === NOT_LOADED_THREAD_ID || params.threadId?.startsWith("not-loaded-"))) {
       return response(id, { thread: { id: params.threadId, cwd: params.cwd, turns: [], status: { type: "notLoaded" } } });
     }
     if (!thread) return send({ jsonrpc: "2.0", id, error: { code: -32000, message: `thread not found: ${params.threadId}` } });
@@ -124,12 +146,29 @@ input.on("line", (line) => {
   }
   if (method === "thread/list") {
     const archived = Boolean(params.archived);
-    const data = [...threads.values()].filter((thread) => Boolean(thread.archived) === archived);
-    return response(id, { data, nextCursor: null, backwardsCursor: null });
+    const direction = params.sortDirection === "desc" ? -1 : 1;
+    const data = [...threads.values()]
+      .filter((thread) => Boolean(thread.archived) === archived)
+      .sort((left, right) => direction * ((left.createdAt ?? 0) - (right.createdAt ?? 0) || String(left.id).localeCompare(String(right.id))));
+    const offset = Number(params.cursor ?? 0);
+    const limit = Number(params.limit ?? data.length);
+    const page = data.slice(offset, offset + limit);
+    const nextCursor = offset + page.length < data.length ? String(offset + page.length) : null;
+    const sendPage = () => response(id, { data: page, nextCursor, backwardsCursor: null });
+    const delay = Number(process.env.FAKE_CODEX_THREAD_LIST_DELAY_MS ?? 0);
+    return delay > 0 ? setTimeout(sendPage, delay) : sendPage();
+  }
+  if (method === "thread/name/set") {
+    const thread = threads.get(params.threadId);
+    if (!thread) return send({ jsonrpc: "2.0", id, error: { code: -32000, message: `thread not found: ${params.threadId}` } });
+    if (params.name === "Rejected label") return send({ jsonrpc: "2.0", id, error: { code: -32000, message: "simulated thread label failure" } });
+    thread.name = params.name;
+    return response(id, {});
   }
   if (method === "turn/start") {
     const thread = threads.get(params.threadId);
     const prompt = params.input?.[0]?.text ?? "";
+    if (!thread.preview) thread.preview = prompt;
     if (prompt.includes("missing turn thread") && params.threadId === "thread-1") return send({ jsonrpc: "2.0", id, error: { code: -32000, message: `thread not found: ${params.threadId}` } });
     const turn = { id: `turn-${nextTurn++}`, status: "inProgress", items: prompt.includes("prompt metadata unavailable") ? [] : [{ id: `user-${nextTurn}`, type: "userMessage", content: params.input ?? [] }] };
     thread.turns.push(turn);

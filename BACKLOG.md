@@ -21,6 +21,12 @@
   - [CDX-18 Version Option](#cdx-18-version-option)
   - [CDX-19 Interim Activity Display](#cdx-19-interim-activity-display)
   - [CDX-20 Interim Reporting Polish](#cdx-20-interim-reporting-polish)
+  - [CDX-24 Saved Current-Thread References](#cdx-24-saved-current-thread-references)
+  - [CDX-25 Thread-ID Bash Completion](#cdx-25-thread-id-bash-completion)
+  - [CDX-26 One-Off Thread Targeting](#cdx-26-one-off-thread-targeting)
+  - [CDX-27 Native Codex Thread Labels](#cdx-27-native-codex-thread-labels)
+  - [CDX-28 Deterministic Thread Selector Contract](#cdx-28-deterministic-thread-selector-contract)
+  - [CDX-29 Safe Thread Completion](#cdx-29-safe-thread-completion)
 - [Open](#open)
   - [CDX-6 Upstream Turn-Level Sandbox Enforcement](#cdx-6-upstream-turn-level-sandbox-enforcement)
   - [CDX-7 Install and Release Polish](#cdx-7-install-and-release-polish)
@@ -32,7 +38,7 @@
 
 ## Current State
 
-`codex-cli` is now a dependency-free (single file) Node.js terminal client for the local Codex app-server. It supports broker, direct, and managed socket modes; persistent broker threads; explicit thread selection and listing; approvals and user input; layered JSON client configuration; local PNG/JPEG/WebP/GIF attachments; explicit prompt attachment actions including `<clipboard>`; Bash completion; model completion; rich verbosity levels; debug diagnostics; JSONL output; agentic script exit codes; raw app-server parameter forwarding; and guarded sandbox handling.
+`codex-cli` is now a dependency-free (single file) Node.js terminal client for the local Codex app-server. It supports broker, direct, and managed socket modes; persistent broker threads; one-off and persistent thread selectors by ID or native label; saved-thread ID prompt references; explicit thread naming and listing; approvals and user input; layered JSON client configuration; local PNG/JPEG/WebP/GIF attachments; explicit prompt attachment actions including `<clipboard>` and `<thread_id>`; Bash completion; model completion; rich verbosity levels; debug diagnostics; JSONL output; agentic script exit codes; raw app-server parameter forwarding; and guarded sandbox handling.
 
 The active test suite covers CLI validation, configuration precedence and safety warnings, broker lifecycle, thread resume, explicit not-loaded thread resume, direct mode, socket mode, WebSocket framing, Bash completion, image attachment validation and transport parity, fail-closed clipboard prompt actions, output rendering, agentic result validation, app-server error forwarding, sandbox parameter guarding, and standalone clipboard text/image extraction.
 
@@ -60,6 +66,12 @@ Release versions group related work; they do not advance once for every individu
 - An upstream issue with only a local mitigation remains active in `BUGS.md` and the backlog until the upstream behavior is fixed; describe the mitigation but do not mark it resolved.
 - Every versioned release updates `CHANGELOG.md`, tests, and affected documentation/examples before its tag is created.
 
+Release decision for v1.1.0: at the project owner's direction, this minor
+release intentionally changes the pre-release `--thread` behavior from a
+persistent switch to one-off targeting. Existing callers migrate to
+`--thread-switch` when persistence is required. This explicit exception does
+not change the major-version rule for future breaking user-facing changes.
+
 ## Done
 
 ### CDX-1 Terminal Codex App-Server Client
@@ -76,7 +88,8 @@ Delivered:
 - Persist selected broker thread state in `.codex-cli/codex-cli.json`.
 - List broker-visible threads, including not-loaded threads from local Codex thread storage.
 - Resume explicit not-loaded thread IDs through `thread/resume`.
-- Preserve strict behavior for explicit stale thread IDs while auto-recovering implicit stale state.
+- Preserve strict behavior for explicit stale thread IDs while allowing
+  same-broker implicit stale state to recover automatically.
 - Support timeouts that leave turns running and allow exact-prompt reattach.
 - Handle approvals, approval logs, structured user-input requests, and noninteractive decline defaults.
 - Provide `--verbosity low|medium|high`, `--json`, `--debug`, and progress spinner behavior.
@@ -105,7 +118,9 @@ Delivered:
 - `codex-cli --broker threads` lists visible local threads.
 - `codex-cli --broker --thread THREAD_ID ...` resumes explicit not-loaded thread IDs.
 - Explicit missing/stale thread IDs report a clear error instead of silently creating a new thread.
-- Implicit saved broker state recovers with a new thread after broker restart or stale state.
+- Same-broker implicit stale state can recover with a new thread. After a
+  broker restart, the saved thread is rejoined strictly and an unavailable
+  conversation stops with recovery evidence instead of being replaced.
 
 ### CDX-4 Completion Fixes
 
@@ -209,6 +224,17 @@ Delivered:
 
 Design: `model/CDX-14-prompt-attachment-actions.md`.
 
+### CDX-15 hiai Broker Launcher Regression
+
+Status: implemented.
+
+The `hiai` wrapper, npm command, and generated shell fallback now select broker
+mode so existing approval handling receives and answers app-server requests.
+The launcher path is covered by completion, forwarding, and broker approval
+integration tests plus the maintained approval example.
+
+Design: `model/CDX-15-hiai-broker-launcher-regression.md`.
+
 ### CDX-17 Welcome Banner and Version
 
 Status: implemented in v1.0.6.
@@ -226,6 +252,142 @@ Add a `--version` option for `codex-cli`, `cdx`, and `hiai`. It must print only 
 Status: implemented in v1.0.7.
 
 Present real interim Codex work events next to the progress indicator while a turn is running, such as plans, commands, file changes, tool calls, approvals, and errors. Control this with `--interim`, enabled by default; it must not invent progress or interfere with JSON and agentic-script output.
+
+### CDX-20 Interim Reporting Polish
+
+Status: implemented in v1.0.10.
+
+Refine live progress reporting so it keeps the user oriented without flooding the terminal with raw operational events. The current low-verbosity `--interim` experience can show every command start and completion alongside useful assistant updates.
+
+Delivered behavior:
+
+- Keep the spinner active whenever interim messages are hidden, so a quiet turn still visibly makes progress.
+- Make `--interim` opt into concise, user-facing status updates rather than raw command telemetry at low and medium verbosity.
+- Use `--verbosity high` to additionally show detailed operational activity, including command start/completion and other rich item details.
+- Preserve the existing guarantees for `--json`, `--agentic-error-code`, redirected stderr, and no invented progress.
+- Define and test the full `--interim` × verbosity visibility matrix, including spinner clearing and resuming around visible output.
+
+### CDX-24 Saved Current-Thread References
+
+Status: implemented in v1.1.0.
+
+Expose the current `codex-cli`-managed thread from its saved
+`.codex-cli/codex-cli.json` state when a caller needs the opaque ID itself.
+Normal prompt execution already reuses that saved thread by default.
+
+Delivered:
+
+- `--current-thread` prints the saved `threadId` only and fails without valid
+  saved state.
+- `<thread_id>` expands to that ID in direct and broker prompt input,
+  preserving ordering and action digests and honoring the invoking client's
+  explicit `--state` file in both transports.
+
+### CDX-25 Thread-ID Bash Completion
+
+Status: implemented in v1.1.0.
+
+Complete `--thread` and `--thread-switch` values from threads available through
+the selected codex-cli broker, so callers do not need to copy opaque IDs
+manually.
+
+Delivered:
+
+- Completion queries only an existing broker, with a one-second total deadline
+  and no output when it is unavailable.
+- Completion presents native names/previews, matches ID prefixes and label
+  fragments, and is disabled for `--new`, direct, and socket invocations.
+- Tests cover live results, missing brokers, prefixes, and incompatible modes.
+
+### CDX-26 One-Off Thread Targeting
+
+Status: implemented in v1.1.0.
+
+Separate temporary thread targeting from changing the workspace's saved current
+thread.
+
+Delivered:
+
+- `--thread SELECTOR` sends one prompt to the selected thread without changing
+  `.codex-cli/codex-cli.json`.
+- `--thread-switch SELECTOR` sends one prompt and persists that thread as the
+  workspace current thread.
+- Both selectors support ID prefixes and thread name/preview fragments, with
+  ambiguity rejected.
+
+### CDX-27 Native Codex Thread Labels
+
+Status: implemented in v1.1.0.
+
+Name Codex threads from the CLI and use those names as convenient selectors.
+
+Delivered:
+
+- `--thread-label LABEL` calls Codex's native thread-name API for `--new`,
+  `--thread`, `--thread-switch`, or the saved current broker thread.
+- `--thread` remains one-off; `--thread-switch` still persists the selected
+  thread. Both accept UUIDs, UUID prefixes, labels, and label fragments.
+- Bash completion presents native names and matches both IDs and labels.
+
+### CDX-28 Deterministic Thread Selector Contract
+
+Status: implemented in v1.1.0.
+
+Make the `--thread` family deterministic across transports and configuration
+sources, with semantics suitable for noninteractive Bash scripts.
+
+Delivered:
+
+- `--thread SELECTOR` is one-off in broker and socket mode and never changes
+  the saved current thread; `--thread-switch SELECTOR` changes it only after
+  the requested turn completes.
+- Command-line, environment, and JSON-configuration selectors share the same
+  resolution and persistence rules. `thread`, `threadSwitch`, and `new` are
+  mutually exclusive within one source; a higher-precedence selection mode
+  replaces a lower-precedence one. An explicit selector that is missing or
+  ambiguous fails instead of creating or choosing a thread.
+- A displayed selector label is the full normalized native name when present,
+  otherwise the full normalized preview; a native name therefore hides its
+  older preview. Selectors resolve in a documented order: full UUID, exact
+  displayed label, unique UUID prefix, then unique displayed-label fragment.
+  Full UUIDs remain the stable interface recommended for scripts; ambiguity
+  exits 65, a missing or stale selector exits 66, and an empty selector is a
+  usage error (2 normally, or system-error status 70 with
+  `--agentic-error-code`).
+- Thread-label operations require an advertised broker capability, so a client
+  cannot silently send them to an older broker that would ignore the field.
+- Label mutation happens only after selector, capability, and active-turn
+  checks; saved thread switching is committed only after turn completion and
+  before a subsequent label RPC, so a naming failure does not roll it back.
+- A native thread label is selection metadata only. It neither validates nor
+  replaces the conversation's stored history or summary.
+
+### CDX-29 Safe Thread Completion
+
+Status: implemented in v1.1.0.
+
+Make label-oriented completion convenient at the terminal without changing
+state or producing unsafe command lines.
+
+Delivered:
+
+- Completion uses the same implicit workspace selection as the command and
+  queries only an already-running broker; pressing Tab never starts one.
+- Thread results are limited to the 50 most recently created non-archived
+  threads and cached for three seconds in the current Bash process, avoiding a
+  full global thread scan on every key press.
+- Completed labels are shell-quoted as one argument, including whitespace,
+  apostrophes, glob characters, substitutions, and other shell metacharacters.
+- Shared label prefixes can be narrowed with more text and another Tab press
+  while remaining one quoted selector argument.
+- An ID-prefix query completes to the full UUID rather than replacing it with
+  a potentially duplicated label. Label fragments still complete to readable
+  labels for interactive use.
+- A real Bash/Readline PTY regression executes repeated shared-prefix
+  completion and a metacharacter-heavy label, verifying one selector argument
+  and no filename fallback. Integration coverage also checks workspace
+  selection, broker-start side effects, duplicate labels, and ID-prefix
+  preservation.
 
 ## Open
 
@@ -343,28 +505,3 @@ Remaining work:
   including timed-out-turn reattachment matching and agentic-result contracts.
 - Add configuration-validation, precedence, transport-parity, and output
   redaction tests; document how users can disable or override it per command.
-
-### CDX-20 Interim Reporting Polish
-
-Status: implemented in v1.0.10.
-
-Refine live progress reporting so it keeps the user oriented without flooding the terminal with raw operational events. The current low-verbosity `--interim` experience can show every command start and completion alongside useful assistant updates.
-
-Delivered behavior:
-
-- Keep the spinner active whenever interim messages are hidden, so a quiet turn still visibly makes progress.
-- Make `--interim` opt into concise, user-facing status updates rather than raw command telemetry at low and medium verbosity.
-- Use `--verbosity high` to additionally show detailed operational activity, including command start/completion and other rich item details.
-- Preserve the existing guarantees for `--json`, `--agentic-error-code`, redirected stderr, and no invented progress.
-- Define and test the full `--interim` × verbosity visibility matrix, including spinner clearing and resuming around visible output.
-
-### CDX-15 hiai Broker Launcher Regression
-
-Status: implemented.
-
-The `hiai` wrapper, npm command, and generated shell fallback now select broker
-mode so existing approval handling receives and answers app-server requests.
-The launcher path is covered by completion, forwarding, and broker approval
-integration tests plus the maintained approval example.
-
-Design: `model/CDX-15-hiai-broker-launcher-regression.md`.

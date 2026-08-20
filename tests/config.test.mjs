@@ -62,9 +62,81 @@ test("show-config defaults to configured values and all includes built-in defaul
   assert.equal(shown.values.timeout, 120);
   assert.equal(shown.sources.timeout.layer, "default");
 
+  result = invoke(workspace, ["--show-config", "--thread", "CLI target"], {
+    home: path.join(workspace, "home"),
+    env: { CDXCLI_THREAD_SWITCH: "environment target" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  shown = JSON.parse(result.stdout);
+  assert.equal(shown.values.thread, "CLI target");
+  assert.equal(shown.sources.thread.source, "--thread");
+  assert.equal(Object.hasOwn(shown.values, "threadSwitch"), false, "an overridden switch must not remain in resolved configuration");
+
   result = invoke(workspace, ["--show-config", "invalid"], { home: path.join(workspace, "home") });
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /--show-config must be set or all/);
+});
+
+test("thread target sources reject same-layer conflicts and honor new-selector precedence", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx config thread target precedence "));
+  const home = path.join(workspace, "home");
+  const threadConfig = path.join(workspace, "thread.json");
+  const newConfig = path.join(workspace, "new.json");
+  const selectorConflict = path.join(workspace, "selector-conflict.json");
+  const newConflict = path.join(workspace, "new-conflict.json");
+  await writeJson(threadConfig, { thread: "configured target" });
+  await writeJson(newConfig, { new: true });
+  await writeJson(selectorConflict, { threadSwitch: "switch target", thread: "one-off target" });
+  await writeJson(newConflict, { thread: "configured target", new: true });
+
+  let result = invoke(workspace, ["--config", threadConfig, "--show-config", "--new"], { home });
+  assert.equal(result.status, 0, result.stderr);
+  let shown = JSON.parse(result.stdout);
+  assert.equal(shown.values.new, true);
+  assert.equal(Object.hasOwn(shown.values, "thread"), false, "higher-precedence --new must clear a configured selector");
+
+  result = invoke(workspace, ["--config", newConfig, "--show-config", "--thread", "CLI target"], { home });
+  assert.equal(result.status, 0, result.stderr);
+  shown = JSON.parse(result.stdout);
+  assert.equal(shown.values.thread, "CLI target");
+  assert.equal(Object.hasOwn(shown.values, "new"), false, "a higher-precedence CLI selector must clear configured new=true");
+
+  result = invoke(workspace, ["--config", threadConfig, "--show-config"], { home, env: { CDXCLI_NEW: "true" } });
+  assert.equal(result.status, 0, result.stderr);
+  shown = JSON.parse(result.stdout);
+  assert.equal(shown.values.new, true);
+  assert.equal(Object.hasOwn(shown.values, "thread"), false, "environment new=true must override a configured selector");
+
+  result = invoke(workspace, ["--config", newConfig, "--show-config"], { home, env: { CDXCLI_THREAD: "environment target" } });
+  assert.equal(result.status, 0, result.stderr);
+  shown = JSON.parse(result.stdout);
+  assert.equal(shown.values.thread, "environment target");
+  assert.equal(Object.hasOwn(shown.values, "new"), false, "an environment selector must override configured new=true");
+
+  for (const conflict of [
+    { args: ["--config", selectorConflict, "--show-config"], env: {}, error: /thread and threadSwitch cannot be combined/ },
+    { args: ["--config", newConflict, "--show-config"], env: {}, error: /new cannot be combined with thread/ },
+    { args: ["--show-config"], env: { CDXCLI_THREAD: "one", CDXCLI_THREAD_SWITCH: "two" }, error: /CDXCLI_THREAD and CDXCLI_THREAD_SWITCH cannot be combined/ },
+    { args: ["--show-config"], env: { CDXCLI_THREAD: "one", CDXCLI_NEW: "true" }, error: /CDXCLI_NEW cannot be combined with CDXCLI_THREAD/ },
+  ]) {
+    result = invoke(workspace, conflict.args, { home, env: conflict.env });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, conflict.error);
+  }
+});
+
+test("config-enabled agentic mode maps empty thread selector validation to exit 70", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx config agentic selector "));
+  const home = path.join(workspace, "home");
+
+  for (const [field, option] of [["thread", "--thread"], ["threadSwitch", "--thread-switch"]]) {
+    const config = path.join(workspace, `${field}.json`);
+    await writeJson(config, { agenticErrorCode: true, [field]: "" });
+
+    const result = invoke(workspace, ["--config", config], { home });
+    assert.equal(result.status, 70, result.stderr);
+    assert.match(result.stderr, new RegExp(`${option} selector must not be empty`));
+  }
 });
 
 test("layered client configuration resolves files, environment, and CLI precedence", async () => {

@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.1.0
+
+- Make thread targeting deterministic and script-safe across broker and socket
+  transports and across CLI, environment, and JSON-configuration sources:
+  `--thread` is always one-off, while `--thread-switch` persists only after a
+  completed turn. Treat `thread`, `threadSwitch`, and `new` as one
+  precedence-aware, mutually exclusive mode family. Explicit missing or
+  ambiguous selectors never create a thread.
+- Define the full displayed selector label as the normalized native name, or
+  normalized preview when unnamed; resolve in stable order—full UUID, exact
+  displayed label, unique UUID prefix, then unique displayed-label fragment—and
+  recommend full UUIDs for automation.
+- Advertise and require broker support for native thread naming before applying
+  `--thread-label`, and delay label mutation until selector, capability, and
+  active-turn validation has succeeded. Persist a completed `--thread-switch`
+  before applying a combined label update, so a later naming failure does not
+  discard the selected current thread.
+- Make thread completion side-effect-free and shell-safe: reuse the command's
+  implicit workspace, never start a broker, cache at most the 50 newest-created
+  non-archived threads for three seconds, keep shared-prefix labels safe across
+  repeated Tab presses as one quoted argument, and preserve UUID-prefix
+  completion.
+
+- Add `--thread-label LABEL` to set a native Codex thread name for a new,
+  one-off, switched, or saved-current broker thread. Thread selectors and Bash
+  completion accept labels, label fragments, UUIDs, and UUID prefixes.
+
+- Make retained broker diagnostics opt-in with `--diagnostics`, so ordinary
+  request failures retain only their direct error message.
+
+- Add `--current-thread` for machine-readable access to a workspace's saved
+  Codex thread ID, and `<thread_id>` prompt expansion at the precise
+  input location. Broker expansion honors the invoking client's explicit
+  `--state` file through a capability-gated value rather than a broker-side
+  filesystem path.
+- Complete `--thread` from IDs available through an already-running broker,
+  without starting one or emitting completion-time diagnostics.
+
 ## 1.0.13
 
 - Recognize retained broker diagnostics for an incompatible upstream Codex
