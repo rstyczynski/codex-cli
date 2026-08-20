@@ -1384,9 +1384,8 @@ function bashCompletionScript(options) {
     "  _CODEX_CLI_THREAD_QUERY=$1",
     "  if [[ ${_CODEX_CLI_THREAD_QUERY:0:1} == \"'\" || ${_CODEX_CLI_THREAD_QUERY:0:1} == '\"' ]]; then",
     "    _CODEX_CLI_THREAD_QUERY=${_CODEX_CLI_THREAD_QUERY:1}",
-    "  else",
-    "    _CODEX_CLI_THREAD_QUERY=${_CODEX_CLI_THREAD_QUERY//\\\\/}",
     "  fi",
+    "  _CODEX_CLI_THREAD_QUERY=${_CODEX_CLI_THREAD_QUERY//\\\\/}",
     "}",
     "",
     "_codex_cli_unquote_completion_word() {",
@@ -1472,8 +1471,8 @@ function bashCompletionScript(options) {
     "  local -a exact_label_ids=()",
     "  COMPREPLY=()",
     "  if [[ ${match_prefix:0:1} == \"'\" ]]; then match_prefix=${match_prefix:1};",
-    "  elif [[ ${match_prefix:0:1} == '\"' ]]; then quote_mode=double; match_prefix=${match_prefix:1};",
-    "  else match_prefix=${match_prefix//\\\\/}; fi",
+    "  elif [[ ${match_prefix:0:1} == '\"' ]]; then quote_mode=double; match_prefix=${match_prefix:1}; fi",
+    "  match_prefix=${match_prefix//\\\\/}",
     "  if ! shopt -q nocasematch; then shopt -s nocasematch; restore_nocasematch=true; fi",
     "  if [[ -n $match_prefix ]]; then",
     "    while IFS= read -r row; do",
@@ -1514,8 +1513,8 @@ function bashCompletionScript(options) {
     "  local -a labels=()",
     "  COMPREPLY=()",
     "  if [[ ${match_prefix:0:1} == \"'\" ]]; then match_prefix=${match_prefix:1};",
-    "  elif [[ ${match_prefix:0:1} == '\"' ]]; then quote_mode=double; match_prefix=${match_prefix:1};",
-    "  else match_prefix=${match_prefix//\\\\/}; fi",
+    "  elif [[ ${match_prefix:0:1} == '\"' ]]; then quote_mode=double; match_prefix=${match_prefix:1}; fi",
+    "  match_prefix=${match_prefix//\\\\/}",
     "  if ! shopt -q nocasematch; then shopt -s nocasematch; restore_nocasematch=true; fi",
     "  while IFS= read -r row; do",
     "    _codex_cli_parse_thread_row \"$row\"; id=$_CODEX_CLI_THREAD_ROW_ID; label=$_CODEX_CLI_THREAD_ROW_LABEL; unique=$_CODEX_CLI_THREAD_ROW_UNIQUE",
@@ -2250,6 +2249,16 @@ function normalizeThreadText(value) {
     : "";
 }
 
+function normalizeLegacyShellEscapes(value) {
+  return typeof value === "string"
+    ? value.replace(/\\([\\\s,;|&()<>$*?{}\[\]!`"'])/g, "$1")
+    : "";
+}
+
+function normalizeThreadSelectorText(value) {
+  return normalizeThreadText(normalizeLegacyShellEscapes(value));
+}
+
 function threadSelectorLabel(thread) {
   return normalizeThreadText(thread.name) || normalizeThreadText(thread.preview);
 }
@@ -2322,7 +2331,7 @@ async function resolveThreadSelector(client, selector) {
   }
   const trimmedSelector = selector.trim();
   if (COMPLETE_THREAD_ID.test(trimmedSelector)) return trimmedSelector.toLowerCase();
-  const normalizedSelector = normalizeThreadText(trimmedSelector).toLowerCase();
+  const normalizedSelector = normalizeThreadSelectorText(trimmedSelector).toLowerCase();
   const threads = await fetchCodexThreads(client);
   const selectUnique = (matches) => {
     const unique = uniqueThreads(matches);

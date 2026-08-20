@@ -714,6 +714,9 @@ Duplicate labels complete to their unambiguous IDs, and an ID-prefix completion
 remains an ID rather than being replaced with a possibly duplicated label.
 `--thread-label` suggests deduplicated displayed labels (native names or
 fallback previews) only—never IDs—while still allowing any new text.
+Legacy candidates produced by older completions, such as
+`Pole\ elektromagnetyczne\, fotony`, are normalized before lookup; new
+completion values are quoted rather than backslash-escaped.
 When several labels share a prefix, continue typing inside the completed
 quoted prefix and press Tab again; the result remains one argument. The actual
 selectors accept full UUIDs, unique UUID prefixes, exact labels, and unique

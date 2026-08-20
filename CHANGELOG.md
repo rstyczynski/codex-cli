@@ -24,6 +24,8 @@
   Keep shared-prefix labels safe across repeated Tab presses as one quoted
   argument, preserve UUID-prefix completion, and suggest deduplicated, quoted
   displayed labels for `--thread-label` without substituting IDs.
+- Normalize legacy backslash-escaped thread values before lookup, so an older
+  copied candidate still resolves its exact native label after being quoted.
 
 - Add `--thread-label LABEL` to set a native Codex thread name for a new,
   one-off, switched, or saved-current broker thread. Thread selectors and Bash

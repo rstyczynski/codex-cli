@@ -638,6 +638,17 @@ test("broker resolves thread labels deterministically and reports stable selecto
   result = invoke(workspace, "--broker", "--thread", "Duplicate label", "ambiguous exact label");
   assert.equal(result.status, 65, result.stderr);
   assert.match(result.stderr, /ambiguous/i);
+
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "Pole elektromagnetyczne, fotony i Y…", "canonical legacy-escape target");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "old shell output Pole\\ elektromagnetyczne\\,\\ fotony\\ i\\ Y…", "first legacy escape history");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--thread-label", "old shell output Pole\\ elektromagnetyczne\\,\\ fotony\\ i\\ Y…", "second legacy escape history");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--thread", "Pole\\ elektromagnetyczne\\,\\ fotony\\ i\\ Y…", "legacy escaped selector resolves exact canonical name");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /legacy escaped selector resolves exact canonical name/);
+  assert.equal(JSON.parse(await readFile(statePath, "utf8")).threadId, "thread-10", "legacy selector remains one-off and must not replace current state");
 });
 
 test("thread selectors from configuration and environment retain one-off and switch semantics", async (t) => {

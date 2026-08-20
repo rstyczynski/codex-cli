@@ -86,6 +86,12 @@
   also returns deduplicated, Bash-quoted displayed labels without inserting
   thread IDs.
 
+- Fixed locally in v1.1.0: a value copied from the earlier backslash-escaping
+  completion became a different literal selector when users later wrapped it
+  in quotes, so it could match unrelated historical previews instead of the
+  exact native thread name. Legacy shell escapes are now normalized before
+  deterministic selector resolution.
+
 - Fixed locally in v1.1.0: the broker protocol did not advertise native
   thread-label support, allowing a newer client to send `threadLabel` to an
   older broker that silently ignored it. The client now requires the broker's
