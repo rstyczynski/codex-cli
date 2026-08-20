@@ -186,6 +186,10 @@ turn:
 hiai --new --current-thread
 ```
 
+Codex does not retain a no-turn thread across a broker restart. In that case,
+the next ordinary prompt automatically creates the real replacement thread
+instead of attempting to resume the empty ID.
+
 To include that same value inside a prompt, use `<thread_id>` at the desired
 location. It uses the invoking client's resolved state file, including an
 explicit `--state PATH`, and is expanded before Codex receives the turn:

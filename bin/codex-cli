@@ -3283,7 +3283,11 @@ async function runBrokerClient(options, prompt, promptParts, savedState) {
   const brokerRestarted = savedState.transport !== "broker" ||
     !savedState.brokerInstanceId ||
     savedState.brokerInstanceId !== status.instanceId;
-  if (!options.new && !options.threadExplicit && brokerRestarted && savedState.threadId) {
+  const savedEmptyThread = savedState.emptyCurrent === true || (!savedState.lastPrompt && savedState.threadId);
+  if (!options.new && !options.threadExplicit && brokerRestarted && savedEmptyThread) {
+    options.new = true;
+    options.thread = undefined;
+  } else if (!options.new && !options.threadExplicit && brokerRestarted && savedState.threadId) {
     options.thread = crash?.threadId === savedState.threadId && !crash.recoveredAt
       ? crash.threadId
       : savedState.threadId;
@@ -3591,7 +3595,7 @@ async function main() {
       try { normalizeSandboxParams(options); } catch (error) { fail(error.message); return; }
       const model = options.clearModel ? null : options.model ?? savedState.model;
       created = await brokerCreateThread(options, model);
-      await saveThread(options.state, created.thread.id, model ?? undefined, { transport: "broker", brokerInstanceId: created.instanceId });
+      await saveThread(options.state, created.thread.id, model ?? undefined, { transport: "broker", brokerInstanceId: created.instanceId, emptyCurrent: true });
       savedState = { ...savedState, threadId: created.thread.id, model };
     }
     const selector = options.threadExplicit ? options.thread : savedState.threadId;

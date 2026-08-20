@@ -47,7 +47,8 @@
   `thread_id` and the current native label, while `codex-cli --current-thread`
   remains UUID-only for scripts. Combine it with `--thread SELECTOR` to inspect
   a different thread read-only, or with `--new` to create and print an empty
-  current thread without starting a turn.
+  current thread without starting a turn. A broker restart transparently
+  replaces that no-turn placeholder on the next prompt.
 - Complete `--thread` from IDs available through an already-running broker,
   without starting one or emitting completion-time diagnostics.
 

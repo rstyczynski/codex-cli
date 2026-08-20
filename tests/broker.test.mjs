@@ -302,9 +302,22 @@ test("new current-thread creates and saves an empty broker thread without a turn
   const state = JSON.parse(await readFile(path.join(workspace, ".codex-cli/codex-cli.json"), "utf8"));
   assert.equal(state.threadId, "thread-1");
   assert.equal(state.transport, "broker");
+  assert.equal(state.emptyCurrent, true);
   const trace = await readTrace(workspace);
   assert.equal(trace.filter((message) => message.method === "thread/start").length, 1);
   assert.equal(trace.some((message) => message.method === "turn/start"), false);
+
+  result = invoke(workspace, "--broker", "stop");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--thread-label", "Persisted after restart", "status");
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /rejoining saved thread/);
+  assert.match(result.stdout, /reply 1: status/);
+  const resumedState = JSON.parse(await readFile(path.join(workspace, ".codex-cli/codex-cli.json"), "utf8"));
+  assert.equal(resumedState.lastPrompt, "status");
+  assert.equal(resumedState.emptyCurrent, undefined);
 });
 
 test("thread and turn parameters pass through JSON files and inline objects", async (t) => {
