@@ -45,7 +45,7 @@ test("hiai launcher selects broker agentic mode and preserves arguments", async 
   });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), [
-    "--broker", "--new", "sudo whoami", "--timeout", "10", "--approval", "accept", "--agentic-error-code",
+    "--broker", "--new", "sudo whoami", "--timeout", "10", "--approval", "accept", "--agentic-error-code", "--current-thread-details",
   ]);
 
   const action = spawnSync(launcher, ["status", "--cwd", "/workspace"], {
@@ -53,7 +53,7 @@ test("hiai launcher selects broker agentic mode and preserves arguments", async 
     timeout: 10000,
   });
   assert.equal(action.status, 0, action.stderr);
-  assert.deepEqual(JSON.parse(action.stdout), ["--broker", "status", "--cwd", "/workspace", "--agentic-error-code"]);
+  assert.deepEqual(JSON.parse(action.stdout), ["--broker", "status", "--cwd", "/workspace", "--agentic-error-code", "--current-thread-details"]);
 });
 
 test("package installs hiai through its broker launcher", async () => {
@@ -83,11 +83,15 @@ test("hiai enables agentic exits and accepts broker approval requests end to end
   assert.match(result.stderr, /broker started/);
 
   result = invokeHiai(workspace, [
-    "--new", "--approval", "accept-for-session", "agentic achieved approve through hiai",
+    "--new", "--thread-label", "Hiai current thread", "--approval", "accept-for-session", "agentic achieved approve through hiai",
   ]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "goal complete\n");
   assert.match(result.stderr, /approval requested for echo approved; acceptForSession/);
+
+  result = invokeHiai(workspace, ["--current-thread"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "thread_id: thread-1\nlabel: Hiai current thread\n");
 
   result = invokeHiai(workspace, ["--new", "agentic not achieved"]);
   assert.equal(result.status, 1, result.stderr);

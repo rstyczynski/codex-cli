@@ -41,6 +41,9 @@
   input location. Broker expansion honors the invoking client's explicit
   `--state` file through a capability-gated value rather than a broker-side
   filesystem path.
+- Make `hiai --current-thread` human-readable as well: it prints the saved
+  `thread_id` and the current native label, while `codex-cli --current-thread`
+  remains UUID-only for scripts.
 - Complete `--thread` from IDs available through an already-running broker,
   without starting one or emitting completion-time diagnostics.
 

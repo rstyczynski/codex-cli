@@ -162,6 +162,15 @@ Print the saved thread ID without parsing the state file yourself:
 codex-cli --broker --current-thread
 ```
 
+That command prints only the UUID, so it is safe to capture in a script.
+For an interactive view, `hiai --current-thread` additionally prints the
+thread's current native label (or `-` when it is unavailable):
+
+```text
+thread_id: 019f...
+label: Continue sprint 18
+```
+
 To include that same value inside a prompt, use `<thread_id>` at the desired
 location. It uses the invoking client's resolved state file, including an
 explicit `--state PATH`, and is expanded before Codex receives the turn:

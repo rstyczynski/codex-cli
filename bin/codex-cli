@@ -133,6 +133,9 @@ const OPTION_DEFINITIONS = [
   { flags: ["--broker-socket"], key: "brokerSocket", kind: "value" }, { flags: ["--prompt"], key: "prompt", kind: "append" }, { flags: ["--image"], key: "images", kind: "append" },
   { flags: ["--config"], key: "configSources", kind: "config-file", environment: false }, { flags: ["--show-config"], key: "showConfig", kind: "show-config", environment: false },
   { flags: ["--current-thread"], key: "currentThread", kind: "boolean", environment: false },
+  // Internal: hiai opts into the human-readable current-thread view. Keep the
+  // public codex-cli command ID-only so shell scripts retain a stable value.
+  { flags: ["--current-thread-details"], key: "currentThreadDetails", kind: "boolean", environment: false },
   { flags: ["--config-json"], key: "configJson", kind: "value" }, { flags: ["--thread-params"], key: "threadParamSources", kind: "append" },
   { flags: ["--turn-params"], key: "turnParamSources", kind: "append" }, { flags: ["--thread"], key: "thread", kind: "value", explicit: "threadExplicit" },
   { flags: ["--thread-switch"], key: "threadSwitch", kind: "value", explicit: "threadSwitchExplicit" },
@@ -357,7 +360,7 @@ function applyEnvironmentOverrides(options, environment = process.env) {
 }
 
 function createDefaultOptions(invocationCwd) {
-  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, threadSwitchExplicit: false, threadLabel: undefined, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, completionThreads: false, completionThreadQuery: undefined, currentThread: false, progress: true, interim: true, debug: false, diagnostics: false, agenticErrorCode: false, version: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
+  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, threadSwitchExplicit: false, threadLabel: undefined, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, completionThreads: false, completionThreadQuery: undefined, currentThread: false, currentThreadDetails: false, progress: true, interim: true, debug: false, diagnostics: false, agenticErrorCode: false, version: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
   for (const field of CONFIGURATION_FIELDS) {
     if (field.definition) options.optionSources[field.definition.key] = defaultSource();
   }
@@ -1607,7 +1610,7 @@ function bashCompletionScript(options) {
     "  cdx() { \"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" \"$@\"; }",
     "fi",
     "if ! type -t hiai >/dev/null 2>&1; then",
-    "  hiai() { \"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --broker \"$@\" --agentic-error-code; }",
+    "  hiai() { \"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --broker \"$@\" --agentic-error-code --current-thread-details; }",
     "fi",
     "complete -F _codex_cli_complete codex-cli cdx hiai",
     "_codex_cli_node_complete() {",
@@ -2396,6 +2399,33 @@ async function listBrokerThreads(options) {
   });
 }
 
+// Best-effort metadata for the human-facing hiai current-thread display. The
+// saved state remains authoritative, so an unavailable/older broker must not
+// turn this read-only convenience command into a failure.
+async function brokerThreadInfo(options, threadId) {
+  const { socketPath } = resolveBrokerPaths(options);
+  if (!await probeBroker(socketPath, 500)) return undefined;
+  return new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    const finish = (thread) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(thread);
+    };
+    const timer = setTimeout(() => finish(), Math.min(options.timeout * 1000, 2000));
+    socket.once("error", () => finish());
+    socket.once("close", () => finish());
+    socket.once("connect", () => sendBrokerMessage(socket, { type: "thread-info", threadId }));
+    new JsonLinePeer(socket, (message) => {
+      if (message.type === "thread-info" && message.thread?.id === threadId) finish(message.thread);
+      else if (message.type === "error") finish();
+    });
+  });
+}
+
 async function printCompletionThreads(options) {
   const brokerWasExplicitlyDisabled = options.broker === false && options.optionSources.broker?.kind !== "default";
   if (brokerWasExplicitlyDisabled || options.direct || options.socket || options.new || options.startDaemon || options.repl || options.brokerAction) return;
@@ -3091,6 +3121,19 @@ async function serveBroker(options) {
         catch (error) { peer.send({ type: "error", code: "THREAD_LIST_FAILED", exitCode: error.exitCode ?? 2, message: error.message }); }
         return peer.close();
       }
+      if (message.type === "thread-info") {
+        if (typeof message.threadId !== "string" || !message.threadId.trim()) {
+          peer.send({ type: "error", code: "THREAD_INFO_ID", exitCode: 2, message: "thread-info requires a thread ID" });
+          return peer.close();
+        }
+        try {
+          const response = await readThreadWithRetry(app, { threadId: message.threadId, includeTurns: false });
+          peer.send({ type: "thread-info", thread: response.thread });
+        } catch (error) {
+          peer.send({ type: "error", code: "THREAD_INFO_FAILED", exitCode: error.exitCode ?? 2, message: error.message });
+        }
+        return peer.close();
+      }
       if (message.type === "stop") {
         if (message.instanceId !== instanceId) { peer.send({ type: "error", code: "INSTANCE", exitCode: 2, message: "broker instance mismatch" }); return peer.close(); }
         peer.send({ type: "stopped" }); peer.close(); setTimeout(() => cleanup().then(() => process.exit(0)), 20); return;
@@ -3471,7 +3514,13 @@ async function main() {
       return;
     }
     if (!savedState.threadId) { fail(`no saved thread found at ${options.state}`); return; }
-    stdout.write(`${savedState.threadId}\n`);
+    if (!options.currentThreadDetails) {
+      stdout.write(`${savedState.threadId}\n`);
+      return;
+    }
+    const thread = options.broker ? await brokerThreadInfo(options, savedState.threadId) : undefined;
+    stdout.write(`thread_id: ${savedState.threadId}\n`);
+    stdout.write(`label: ${thread ? threadSelectorLabel(thread) || "-" : "-"}\n`);
     return;
   }
   // A workspace that was last used through the broker should keep using that

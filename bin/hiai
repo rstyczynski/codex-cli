@@ -2,4 +2,4 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-exec "$script_dir/codex-cli" --broker "$@" --agentic-error-code
+exec "$script_dir/codex-cli" --broker "$@" --agentic-error-code --current-thread-details

@@ -150,6 +150,10 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   assert.ok(state.brokerInstanceId);
   const firstBrokerInstanceId = state.brokerInstanceId;
 
+  result = invoke(workspace, "--broker", "--current-thread", "--current-thread-details");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `thread_id: thread-1\nlabel: ${longThreadTitle}\n`);
+
   result = invoke(workspace, "--broker", "threads");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^ID\tSTATUS\tARCHIVED\tCREATED\tUPDATED\tCWD\tTITLE$/m);
