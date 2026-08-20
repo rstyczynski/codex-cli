@@ -44,7 +44,8 @@
 - Make `hiai --current-thread` human-readable as well: it prints the saved
   `thread_id` and the current native label, while `codex-cli --current-thread`
   remains UUID-only for scripts. Combine it with `--thread SELECTOR` to inspect
-  a different thread read-only.
+  a different thread read-only, or with `--new` to create and print an empty
+  current thread without starting a turn.
 - Complete `--thread` from IDs available through an already-running broker,
   without starting one or emitting completion-time diagnostics.
 

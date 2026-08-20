@@ -93,6 +93,10 @@ test("hiai enables agentic exits and accepts broker approval requests end to end
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "thread_id: thread-1\nlabel: Hiai current thread\n");
 
+  result = invokeHiai(workspace, ["--new", "--current-thread"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "thread_id: thread-2\nlabel: -\n");
+
   result = invokeHiai(workspace, ["--new", "agentic not achieved"]);
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, "goal incomplete\n");

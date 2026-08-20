@@ -289,6 +289,24 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   assert.equal(stoppedResult.status, 130, stoppedResult.stderr);
 });
 
+test("new current-thread creates and saves an empty broker thread without a turn", async (t) => {
+  await chmod(fakeCodex, 0o755);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker empty thread "));
+  t.after(() => invoke(workspace, "--broker", "stop"));
+
+  let result = invoke(workspace, "--broker", "start");
+  assert.equal(result.status, 0, result.stderr);
+  result = invoke(workspace, "--broker", "--new", "--current-thread");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "thread-1\n");
+  const state = JSON.parse(await readFile(path.join(workspace, ".codex-cli/codex-cli.json"), "utf8"));
+  assert.equal(state.threadId, "thread-1");
+  assert.equal(state.transport, "broker");
+  const trace = await readTrace(workspace);
+  assert.equal(trace.filter((message) => message.method === "thread/start").length, 1);
+  assert.equal(trace.some((message) => message.method === "turn/start"), false);
+});
+
 test("thread and turn parameters pass through JSON files and inline objects", async (t) => {
   await chmod(fakeCodex, 0o755);
   const workspace = await mkdtemp(path.join(os.tmpdir(), "cdx broker params "));

@@ -31,7 +31,7 @@ Options:
   --image PATH         Attach a PNG, JPEG, WebP, or GIF (repeatable; max 20 MiB each)
   --config PATH        Client configuration JSON file (repeatable)
   --show-config [MODE] Print values and sources: set (default) or all; then exit
-  --current-thread     Print the saved workspace thread ID; then exit
+  --current-thread     Print a thread ID; with --new, create an empty current thread
   --config-json PATH   JSON object of Codex config overrides for a new thread
   --thread-params JSON Thread/start parameters as a JSON object or @FILE (repeatable)
   --turn-params JSON   Turn/start parameters as a JSON object or @FILE (repeatable)
@@ -2433,6 +2433,39 @@ async function brokerThreadInfo(options, selector, { required = false } = {}) {
   });
 }
 
+async function brokerCreateThread(options, model) {
+  const { socketPath } = resolveBrokerPaths(options);
+  const status = await probeBroker(socketPath, 500);
+  if (!status) throw new Error(`broker is not running; start it with: node ${process.argv[1]} --broker start`);
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    const finish = (result, error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) reject(error); else resolve(result);
+    };
+    const timer = setTimeout(() => finish(undefined, new Error("timed out while creating Codex thread")), options.timeout * 1000);
+    socket.once("error", (error) => finish(undefined, error));
+    socket.once("close", () => finish(undefined, new Error("broker connection closed before thread creation completed")));
+    socket.once("connect", () => sendBrokerMessage(socket, {
+      type: "thread-create",
+      ...(model === undefined ? {} : { model }),
+      threadParams: options.threadParams,
+    }));
+    new JsonLinePeer(socket, (message) => {
+      if (message.type === "thread-created" && typeof message.thread?.id === "string") finish(message);
+      else if (message.type === "error") {
+        const error = new Error(message.message ?? "broker failed to create thread");
+        error.exitCode = message.exitCode ?? 2;
+        finish(undefined, error);
+      }
+    });
+  });
+}
+
 async function printCompletionThreads(options) {
   const brokerWasExplicitlyDisabled = options.broker === false && options.optionSources.broker?.kind !== "default";
   if (brokerWasExplicitlyDisabled || options.direct || options.socket || options.new || options.startDaemon || options.repl || options.brokerAction) return;
@@ -3142,6 +3175,23 @@ async function serveBroker(options) {
         }
         return peer.close();
       }
+      if (message.type === "thread-create") {
+        if (active) { peer.send({ type: "error", code: "BUSY", exitCode: 75, message: "broker is busy with another turn" }); return peer.close(); }
+        if (message.threadParams !== undefined && (!message.threadParams || typeof message.threadParams !== "object" || Array.isArray(message.threadParams))) {
+          peer.send({ type: "error", code: "THREAD_CREATE_PARAMS", exitCode: 2, message: "thread-create threadParams must be an object" });
+          return peer.close();
+        }
+        try {
+          const threadStartParams = { ...(message.threadParams ?? {}), cwd: workspace, ephemeral: false };
+          if (Object.hasOwn(message, "model")) threadStartParams.model = message.model;
+          const response = await app.request("thread/start", threadStartParams);
+          invalidateCompletionThreadCatalog();
+          peer.send({ type: "thread-created", thread: response.thread, instanceId });
+        } catch (error) {
+          peer.send({ type: "error", code: "THREAD_CREATE_FAILED", exitCode: error.exitCode ?? 2, message: error.message });
+        }
+        return peer.close();
+      }
       if (message.type === "stop") {
         if (message.instanceId !== instanceId) { peer.send({ type: "error", code: "INSTANCE", exitCode: 2, message: "broker instance mismatch" }); return peer.close(); }
         peer.send({ type: "stopped" }); peer.close(); setTimeout(() => cleanup().then(() => process.exit(0)), 20); return;
@@ -3517,19 +3567,29 @@ async function main() {
   let savedState = await readSavedState(options.state);
   if (options.currentThread) {
     if (options.prompt.length || options.stdin) { fail("--current-thread cannot be combined with a prompt or --stdin"); return; }
-    if (options.threadSwitchExplicit || options.threadLabel !== undefined || options.optionSources.new?.kind === "command") {
-      fail("--current-thread cannot be combined with --new, --thread-switch, or --thread-label");
+    if (options.threadSwitchExplicit || options.threadLabel !== undefined) {
+      fail("--current-thread cannot be combined with --thread-switch or --thread-label");
       return;
     }
     if (options.threadExplicit && !options.broker) {
       fail("--current-thread with --thread requires --broker");
       return;
     }
+    if (options.new && !options.broker) { fail("--new --current-thread requires --broker"); return; }
+    if (options.new && options.threadExplicit) { fail("--new and --thread cannot be used together"); return; }
+    let created;
+    if (options.new) {
+      try { normalizeSandboxParams(options); } catch (error) { fail(error.message); return; }
+      const model = options.clearModel ? null : options.model ?? savedState.model;
+      created = await brokerCreateThread(options, model);
+      await saveThread(options.state, created.thread.id, model ?? undefined, { transport: "broker", brokerInstanceId: created.instanceId });
+      savedState = { ...savedState, threadId: created.thread.id, model };
+    }
     const selector = options.threadExplicit ? options.thread : savedState.threadId;
     if (!selector) { fail(`no saved thread found at ${options.state}`); return; }
-    const lookupRequested = options.threadExplicit || options.currentThreadDetails;
+    const lookupRequested = options.threadExplicit || options.currentThreadDetails || options.new;
     const thread = lookupRequested && options.broker
-      ? await brokerThreadInfo(options, selector, { required: options.threadExplicit })
+      ? (created?.thread ?? await brokerThreadInfo(options, selector, { required: options.threadExplicit }))
       : undefined;
     if (!options.currentThreadDetails) {
       stdout.write(`${thread?.id ?? selector}\n`);

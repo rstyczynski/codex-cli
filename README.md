@@ -179,6 +179,13 @@ the broker:
 hiai --thread 'Continue sprint 18' --current-thread
 ```
 
+Create an empty thread, make it current, and print its ID without starting a
+turn:
+
+```bash
+hiai --new --current-thread
+```
+
 To include that same value inside a prompt, use `<thread_id>` at the desired
 location. It uses the invoking client's resolved state file, including an
 explicit `--state PATH`, and is expanded before Codex receives the turn:
