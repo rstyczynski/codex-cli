@@ -2759,7 +2759,7 @@ async function serveBroker(options) {
     const threads = completion
       ? await completionThreadCatalog()
       : await fetchCodexThreads(app, { includeArchived: true, sortDirection: "asc" });
-    const normalizedQuery = completion && typeof query === "string" ? normalizeThreadText(query).toLowerCase() : "";
+    const normalizedQuery = completion && typeof query === "string" ? normalizeThreadSelectorText(query).toLowerCase() : "";
     const matchingThreads = completion && normalizedQuery
       ? threads.filter((thread) => thread.id.toLowerCase().startsWith(normalizedQuery) || threadSelectorLabel(thread).toLowerCase().includes(normalizedQuery))
       : completion ? [] : threads;
