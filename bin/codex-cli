@@ -2402,26 +2402,33 @@ async function listBrokerThreads(options) {
 // Best-effort metadata for the human-facing hiai current-thread display. The
 // saved state remains authoritative, so an unavailable/older broker must not
 // turn this read-only convenience command into a failure.
-async function brokerThreadInfo(options, threadId) {
+async function brokerThreadInfo(options, selector, { required = false } = {}) {
   const { socketPath } = resolveBrokerPaths(options);
-  if (!await probeBroker(socketPath, 500)) return undefined;
-  return new Promise((resolve) => {
+  if (!await probeBroker(socketPath, 500)) {
+    if (required) throw new Error(`broker is not running; start it with: node ${process.argv[1]} --broker start`);
+    return undefined;
+  }
+  return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     let settled = false;
-    const finish = (thread) => {
+    const finish = (thread, error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       socket.destroy();
-      resolve(thread);
+      if (error && required) reject(error); else resolve(thread);
     };
-    const timer = setTimeout(() => finish(), Math.min(options.timeout * 1000, 2000));
+    const timer = setTimeout(() => finish(undefined, new Error("timed out while looking up Codex thread metadata")), Math.min(options.timeout * 1000, 2000));
     socket.once("error", () => finish());
     socket.once("close", () => finish());
-    socket.once("connect", () => sendBrokerMessage(socket, { type: "thread-info", threadId }));
+    socket.once("connect", () => sendBrokerMessage(socket, { type: "thread-info", selector }));
     new JsonLinePeer(socket, (message) => {
-      if (message.type === "thread-info" && message.thread?.id === threadId) finish(message.thread);
-      else if (message.type === "error") finish();
+      if (message.type === "thread-info" && typeof message.thread?.id === "string") finish(message.thread);
+      else if (message.type === "error") {
+        const error = new Error(message.message ?? "broker failed to look up thread metadata");
+        error.exitCode = message.exitCode ?? 2;
+        finish(undefined, error);
+      }
     });
   });
 }
@@ -3122,12 +3129,13 @@ async function serveBroker(options) {
         return peer.close();
       }
       if (message.type === "thread-info") {
-        if (typeof message.threadId !== "string" || !message.threadId.trim()) {
-          peer.send({ type: "error", code: "THREAD_INFO_ID", exitCode: 2, message: "thread-info requires a thread ID" });
+        if (typeof message.selector !== "string" || !message.selector.trim()) {
+          peer.send({ type: "error", code: "THREAD_INFO_SELECTOR", exitCode: 2, message: "thread-info requires a thread selector" });
           return peer.close();
         }
         try {
-          const response = await readThreadWithRetry(app, { threadId: message.threadId, includeTurns: false });
+          const threadId = await resolveThreadSelector(app, message.selector);
+          const response = await readThreadWithRetry(app, { threadId, includeTurns: false });
           peer.send({ type: "thread-info", thread: response.thread });
         } catch (error) {
           peer.send({ type: "error", code: "THREAD_INFO_FAILED", exitCode: error.exitCode ?? 2, message: error.message });
@@ -3509,17 +3517,25 @@ async function main() {
   let savedState = await readSavedState(options.state);
   if (options.currentThread) {
     if (options.prompt.length || options.stdin) { fail("--current-thread cannot be combined with a prompt or --stdin"); return; }
-    if (options.commandThreadSelector || options.threadLabel !== undefined || options.optionSources.new?.kind === "command") {
-      fail("--current-thread cannot be combined with --new, --thread, --thread-switch, or --thread-label");
+    if (options.threadSwitchExplicit || options.threadLabel !== undefined || options.optionSources.new?.kind === "command") {
+      fail("--current-thread cannot be combined with --new, --thread-switch, or --thread-label");
       return;
     }
-    if (!savedState.threadId) { fail(`no saved thread found at ${options.state}`); return; }
+    if (options.threadExplicit && !options.broker) {
+      fail("--current-thread with --thread requires --broker");
+      return;
+    }
+    const selector = options.threadExplicit ? options.thread : savedState.threadId;
+    if (!selector) { fail(`no saved thread found at ${options.state}`); return; }
+    const lookupRequested = options.threadExplicit || options.currentThreadDetails;
+    const thread = lookupRequested && options.broker
+      ? await brokerThreadInfo(options, selector, { required: options.threadExplicit })
+      : undefined;
     if (!options.currentThreadDetails) {
-      stdout.write(`${savedState.threadId}\n`);
+      stdout.write(`${thread?.id ?? selector}\n`);
       return;
     }
-    const thread = options.broker ? await brokerThreadInfo(options, savedState.threadId) : undefined;
-    stdout.write(`thread_id: ${savedState.threadId}\n`);
+    stdout.write(`thread_id: ${thread?.id ?? selector}\n`);
     stdout.write(`label: ${thread ? threadSelectorLabel(thread) || "-" : "-"}\n`);
     return;
   }

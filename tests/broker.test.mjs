@@ -154,6 +154,11 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, `thread_id: thread-1\nlabel: ${longThreadTitle}\n`);
 
+  result = invoke(workspace, "--broker", "--thread", longThreadTitle, "--current-thread");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "thread-1\n");
+  assert.equal(JSON.parse(await readFile(path.join(workspace, ".codex-cli/codex-cli.json"), "utf8")).threadId, "thread-1");
+
   result = invoke(workspace, "--broker", "threads");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^ID\tSTATUS\tARCHIVED\tCREATED\tUPDATED\tCWD\tTITLE$/m);

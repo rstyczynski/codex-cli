@@ -171,6 +171,14 @@ thread_id: 019f...
 label: Continue sprint 18
 ```
 
+Add `--thread SELECTOR` to inspect another existing thread without sending a
+prompt or changing saved state. It resolves labels and UUID prefixes through
+the broker:
+
+```bash
+hiai --thread 'Continue sprint 18' --current-thread
+```
+
 To include that same value inside a prompt, use `<thread_id>` at the desired
 location. It uses the invoking client's resolved state file, including an
 explicit `--state PATH`, and is expanded before Codex receives the turn:

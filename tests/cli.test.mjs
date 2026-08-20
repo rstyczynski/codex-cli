@@ -37,7 +37,7 @@ test("CLI rejects invalid options and incompatible modes", async () => {
     { args: ["--broker", "start", "--thread-switch", "thread-1", "prompt"], error: /--broker start cannot be combined/ },
     { args: ["--broker", "threads", "--thread-label", "ignored", "prompt"], error: /--broker threads cannot be combined/ },
     { args: ["--broker", "status", "--current-thread"], error: /--broker status cannot be combined/ },
-    { args: ["--current-thread", "--thread", "thread-1"], error: /--current-thread cannot be combined/ },
+    { args: ["--current-thread", "--thread", "thread-1"], error: /--current-thread with --thread requires --broker/ },
     { args: ["--current-thread", "--new"], error: /--current-thread cannot be combined/ },
     { args: ["--repl", "--new", "prompt"], error: /requires --direct/ },
     { args: ["--direct", "--repl", "--new", "prompt"], error: /requires a terminal/ },
