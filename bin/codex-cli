@@ -2418,7 +2418,7 @@ async function brokerThreadInfo(options, selector, { required = false } = {}) {
       socket.destroy();
       if (error && required) reject(error); else resolve(thread);
     };
-    const timer = setTimeout(() => finish(undefined, new Error("timed out while looking up Codex thread metadata")), Math.min(options.timeout * 1000, 2000));
+    const timer = setTimeout(() => finish(undefined, new Error("timed out while looking up Codex thread metadata")), options.timeout * 1000);
     socket.once("error", () => finish());
     socket.once("close", () => finish());
     socket.once("connect", () => sendBrokerMessage(socket, { type: "thread-info", selector }));
