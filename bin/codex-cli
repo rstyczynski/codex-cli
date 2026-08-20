@@ -155,6 +155,7 @@ const OPTION_DEFINITIONS = [
   { flags: ["--completion-cached-models"], key: "completionCachedModels", kind: "boolean" },
   { flags: ["--completion-threads"], key: "completionThreads", kind: "boolean" },
   { flags: ["--completion-thread-query"], key: "completionThreadQuery", kind: "value", environment: false },
+  { flags: ["--completion-thread-labels"], key: "completionThreadLabels", kind: "boolean", environment: false },
 ];
 const OPTION_BY_FLAG = new Map(OPTION_DEFINITIONS.flatMap((definition) => definition.flags.map((flag) => [flag, definition])));
 
@@ -360,7 +361,7 @@ function applyEnvironmentOverrides(options, environment = process.env) {
 }
 
 function createDefaultOptions(invocationCwd) {
-  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, threadSwitchExplicit: false, threadLabel: undefined, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, completionThreads: false, completionThreadQuery: undefined, currentThread: false, currentThreadDetails: false, progress: true, interim: true, debug: false, diagnostics: false, agenticErrorCode: false, version: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
+  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, threadSwitchExplicit: false, threadLabel: undefined, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, completionThreads: false, completionThreadQuery: undefined, completionThreadLabels: false, currentThread: false, currentThreadDetails: false, progress: true, interim: true, debug: false, diagnostics: false, agenticErrorCode: false, version: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
   for (const field of CONFIGURATION_FIELDS) {
     if (field.definition) options.optionSources[field.definition.key] = defaultSource();
   }
@@ -431,6 +432,7 @@ function agenticModeRequested(argv, environment = process.env) {
 const AGENTIC_RESULT_INSTRUCTIONS = `For script integration, your final assistant message must contain exactly one JSON object and no Markdown or other text:
 {"goal_achieved":boolean,"agentic_exit_code":integer,"summary":"short result","reason":"why the goal was or was not achieved"}
 Set goal_achieved to true only when the requested task is fully complete and no required work remains. Requested edits must be applied, and requested checks or tests must be completed unless the user explicitly allowed them to be skipped. Set it to false when work is partial, blocked, denied, impossible, materially uncertain, or missing required verification. Use agentic_exit_code 0 as the default when goal_achieved is true and 1 as the default when it is false. When the user's prompt explicitly assigns a code to an observed result, use that code even when the task was completed: codes 1-12 and 14-15 may accompany either goal_achieved value. Code 0 requires goal_achieved true. Never use code 13.`;
+const AGENTIC_RESULT_INSTRUCTIONS_MARKER = "For script integration, your final assistant message must contain exactly one JSON object and no Markdown or other text:";
 
 const AGENTIC_RESULT_SCHEMA = {
   type: "object",
@@ -1421,7 +1423,7 @@ function bashCompletionScript(options) {
     "  fi",
     "  command=(\"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --completion-threads --completion-thread-query \"$_CODEX_CLI_THREAD_QUERY\" --timeout 10)",
     "  command+=(\"${_CODEX_CLI_THREAD_CONTEXT_ARGS[@]}\")",
-    "  [[ $mode == label ]] && command+=(--new false)",
+    "  [[ $mode == label ]] && command+=(--new false --completion-thread-labels)",
     "  _CODEX_CLI_THREAD_CACHE=$(\"${command[@]}\"); status=$?",
     "  _CODEX_CLI_THREAD_CACHE_KEY=$cache_key",
     "  _CODEX_CLI_THREAD_CACHE_AT=$SECONDS",
@@ -1502,7 +1504,7 @@ function bashCompletionScript(options) {
     "  if ! shopt -q nocasematch; then shopt -s nocasematch; restore_nocasematch=true; fi",
     "  while IFS= read -r row; do",
     "    _codex_cli_parse_thread_row \"$row\"; id=$_CODEX_CLI_THREAD_ROW_ID; label=$_CODEX_CLI_THREAD_ROW_LABEL; unique=$_CODEX_CLI_THREAD_ROW_UNIQUE",
-    "    [[ -n $label && $label == *\"$match_prefix\"* ]] || continue",
+    "    [[ -n $label && $label == \"$match_prefix\"* ]] || continue",
     "    duplicate=false",
     "    for existing in \"${labels[@]}\"; do [[ $existing == \"$label\" ]] && duplicate=true && break; done",
     "    [[ $duplicate == true ]] && continue",
@@ -2259,7 +2261,11 @@ function normalizeThreadSelectorText(value) {
 }
 
 function threadSelectorLabel(thread) {
-  return normalizeThreadText(thread.name) || normalizeThreadText(thread.preview);
+  const name = normalizeThreadText(thread.name);
+  if (name) return name;
+  const preview = normalizeThreadText(thread.preview);
+  const contractIndex = preview.indexOf(AGENTIC_RESULT_INSTRUCTIONS_MARKER);
+  return contractIndex === -1 ? preview : preview.slice(0, contractIndex).trim();
 }
 
 function threadListLabel(thread) {
@@ -2494,7 +2500,7 @@ async function printCompletionThreads(options) {
       const timer = setTimeout(finish, remainingMs);
       socket.once("error", finish);
       socket.once("close", finish);
-      socket.once("connect", () => sendBrokerMessage(socket, { type: "threads", completion: true, query: options.completionThreadQuery }));
+      socket.once("connect", () => sendBrokerMessage(socket, { type: "threads", completion: true, query: options.completionThreadQuery, labelPrefix: options.completionThreadLabels }));
       new JsonLinePeer(socket, (message) => {
         if (message.type === "thread-list-item" && typeof message.thread?.id === "string") threads.push(message.thread);
         if (message.type === "threads-completed") { completed = true; finish(); }
@@ -2838,13 +2844,15 @@ async function serveBroker(options) {
     return threads ?? completionThreadCatalog();
   };
 
-  const listThreads = async (peer, completion = false, query) => {
+  const listThreads = async (peer, completion = false, query, labelPrefix = false) => {
     const threads = completion
       ? await completionThreadCatalog()
       : await fetchCodexThreads(app, { includeArchived: true, sortDirection: "asc" });
     const normalizedQuery = completion && typeof query === "string" ? normalizeThreadSelectorText(query).toLowerCase() : "";
     const matchingThreads = completion && normalizedQuery
-      ? threads.filter((thread) => thread.id.toLowerCase().startsWith(normalizedQuery) || threadSelectorLabel(thread).toLowerCase().includes(normalizedQuery))
+      ? threads.filter((thread) => labelPrefix
+        ? threadSelectorLabel(thread).toLowerCase().startsWith(normalizedQuery)
+        : thread.id.toLowerCase().startsWith(normalizedQuery) || threadSelectorLabel(thread).toLowerCase().includes(normalizedQuery))
       : completion ? [] : threads;
     for (const thread of matchingThreads) peer.send({ type: "thread-list-item", thread });
     peer.send({ type: "threads-completed" });
@@ -3157,7 +3165,7 @@ async function serveBroker(options) {
       if (message.version !== BROKER_VERSION) { peer.send({ type: "error", code: "VERSION", exitCode: 2, message: "unsupported broker protocol version" }); return peer.close(); }
       if (message.type === "status") { peer.send({ type: "status", ready: appHealthy, pid: process.pid, instanceId, socketPath, active: Boolean(active), experimentalApi: options.experimentalApi, capabilities: BROKER_CAPABILITIES }); return peer.close(); }
       if (message.type === "threads") {
-        try { await listThreads(peer, message.completion === true, message.query); }
+        try { await listThreads(peer, message.completion === true, message.query, message.labelPrefix === true); }
         catch (error) { peer.send({ type: "error", code: "THREAD_LIST_FAILED", exitCode: error.exitCode ?? 2, message: error.message }); }
         return peer.close();
       }
@@ -3510,6 +3518,7 @@ async function main() {
   if (options.threadSwitchExplicit && !options.threadSwitch?.trim()) { fail("--thread-switch selector must not be empty"); return; }
   if (options.threadLabel !== undefined && !options.threadLabel.trim()) { fail("--thread-label must not be empty"); return; }
   if (options.completionThreadQuery !== undefined && !options.completionThreads) { fail("--completion-thread-query is only valid with --completion-threads"); return; }
+  if (options.completionThreadLabels && !options.completionThreads) { fail("--completion-thread-labels is only valid with --completion-threads"); return; }
   if (options.completionThreads) {
     if (options.optionSources.cwd?.kind === "default") {
       options.cwd = await resolveImplicitBrokerWorkspace(invocationCwd);

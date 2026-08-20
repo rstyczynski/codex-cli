@@ -23,7 +23,9 @@
   seconds, and show a delayed spinner during a bounded ten-second first lookup.
   Keep shared-prefix labels safe across repeated Tab presses as one quoted
   argument, preserve UUID-prefix completion, and suggest deduplicated, quoted
-  displayed labels for `--thread-label` without substituting IDs.
+  displayed labels for `--thread-label` without substituting IDs. Strip
+  codex-cli's internal agentic-result contract from fallback previews and use
+  label-prefix suggestions so common instruction text cannot flood completion.
 - Normalize legacy backslash-escaped thread values before lookup, so an older
   copied candidate still resolves its exact native label after being quoted.
 - Omit non-addressable Codex sub-agent threads from selector completion and

@@ -531,6 +531,14 @@ test("thread completion reads available IDs from an existing broker", async (t) 
   assert.equal(labelOnly.status, 0, labelOnly.stderr);
   assert.deepEqual(labelOnly.stdout.split("\0").filter(Boolean), ["'Polish project'", "'019a0000-0000-0000-0000-000000000000'"], "label completion must omit IDs and unlabeled rows while retaining UUID-shaped label text");
 
+  const labelPrefix = runBash([
+    `eval "$(${sourceCommand()})"`,
+    `_codex_cli_thread_label_words ${shellQuote("thread-1\tPolish project\t1\nthread-2\tArchived Polish project\t1")} pol`,
+    "printf '%s\\0' \"${COMPREPLY[@]}\"",
+  ].join("\n"));
+  assert.equal(labelPrefix.status, 0, labelPrefix.stderr);
+  assert.deepEqual(labelPrefix.stdout.split("\0").filter(Boolean), ["'Polish project'"], "label completion must prefer a label prefix over a broad substring match");
+
   const unsafeOpenDoubleLabel = runBash([
     `eval "$(${sourceCommand()})"`,
     `_codex_cli_thread_label_words ${shellQuote("thread-h\tunsafe !!\t1")} ${shellQuote('"unsafe')}`,
