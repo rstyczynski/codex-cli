@@ -1403,21 +1403,8 @@ function bashCompletionScript(options) {
     "  _CODEX_CLI_COMPLETION_WORD=$value",
     "}",
     "",
-    "_codex_cli_thread_spinner() {",
-    "  local frame shown=false",
-    "  trap '[[ $shown == true ]] && printf \"\\r\\033[2K\" >&2; exit 0' TERM INT HUP",
-    "  sleep 0.2 || return",
-    "  shown=true",
-    "  while :; do",
-    "    for frame in '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏'; do",
-    "      printf '\\r\\033[2K%s Searching Codex threads…' \"$frame\" >&2",
-    "      sleep 0.1 || return",
-    "    done",
-    "  done",
-    "}",
-    "",
     "_codex_cli_thread_values() {",
-    "  local mode=${1-selector} raw_query=${2-} cache_key context_arg spinner_pid status monitor_was_enabled=false",
+    "  local mode=${1-selector} raw_query=${2-} cache_key context_arg status",
     "  local -a command",
     "  _codex_cli_normalize_thread_query \"$raw_query\"",
     "  cache_key=\"$PWD|$mode|$_CODEX_CLI_THREAD_QUERY\"",
@@ -1432,13 +1419,7 @@ function bashCompletionScript(options) {
     "  command=(\"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --completion-threads --completion-thread-query \"$_CODEX_CLI_THREAD_QUERY\" --timeout 10)",
     "  command+=(\"${_CODEX_CLI_THREAD_CONTEXT_ARGS[@]}\")",
     "  [[ $mode == label ]] && command+=(--new false)",
-    "  if [[ -t 2 ]]; then",
-    "    case $- in *m*) set +m; monitor_was_enabled=true ;; esac",
-    "    _codex_cli_thread_spinner & spinner_pid=$!",
-    "    [[ $monitor_was_enabled == true ]] && set -m",
-    "  fi",
-    "  _CODEX_CLI_THREAD_CACHE=$(\"${command[@]}\" 2>/dev/null); status=$?",
-    "  if [[ -n ${spinner_pid-} ]]; then kill \"$spinner_pid\" 2>/dev/null; wait \"$spinner_pid\" 2>/dev/null; fi",
+    "  _CODEX_CLI_THREAD_CACHE=$(\"${command[@]}\"); status=$?",
     "  _CODEX_CLI_THREAD_CACHE_KEY=$cache_key",
     "  _CODEX_CLI_THREAD_CACHE_AT=$SECONDS",
     "  return $status",
@@ -1846,6 +1827,21 @@ class ProgressSpinner {
     if (this.visible) this.output.write("\r\x1b[2K");
     this.visible = false;
   }
+}
+
+function startCompletionSpinner() {
+  if (!stderr.isTTY) return () => {};
+  const spinner = new ProgressSpinner(true, stderr);
+  let interval;
+  const startTimer = setTimeout(() => {
+    spinner.start("Searching Codex threads…");
+    interval = setInterval(() => spinner.advance(), 100);
+  }, 200);
+  return () => {
+    clearTimeout(startTimer);
+    clearInterval(interval);
+    spinner.stop();
+  };
 }
 
 function showWelcomeBanner(options, output = stderr, force = false) {
@@ -2400,36 +2396,41 @@ async function printCompletionThreads(options) {
   if (!status?.capabilities?.includes("thread-selectors-v1") || !status.capabilities.includes("thread-completion-query-v1")) return;
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) return;
-  const listing = await new Promise((resolve) => {
-    const socket = net.createConnection(socketPath);
-    const threads = [];
-    let finished = false;
-    let completed = false;
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      socket.destroy();
-      resolve({ threads, completed });
-    };
-    const timer = setTimeout(finish, remainingMs);
-    socket.once("error", finish);
-    socket.once("close", finish);
-    socket.once("connect", () => sendBrokerMessage(socket, { type: "threads", completion: true, query: options.completionThreadQuery }));
-    new JsonLinePeer(socket, (message) => {
-      if (message.type === "thread-list-item" && typeof message.thread?.id === "string") threads.push(message.thread);
-      if (message.type === "threads-completed") { completed = true; finish(); }
-      else if (message.type === "error") finish();
+  const stopSpinner = startCompletionSpinner();
+  try {
+    const listing = await new Promise((resolve) => {
+      const socket = net.createConnection(socketPath);
+      const threads = [];
+      let finished = false;
+      let completed = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        socket.destroy();
+        resolve({ threads, completed });
+      };
+      const timer = setTimeout(finish, remainingMs);
+      socket.once("error", finish);
+      socket.once("close", finish);
+      socket.once("connect", () => sendBrokerMessage(socket, { type: "threads", completion: true, query: options.completionThreadQuery }));
+      new JsonLinePeer(socket, (message) => {
+        if (message.type === "thread-list-item" && typeof message.thread?.id === "string") threads.push(message.thread);
+        if (message.type === "threads-completed") { completed = true; finish(); }
+        else if (message.type === "error") finish();
+      });
     });
-  });
-  if (!listing.completed) return;
-  const uniqueThreads = [...new Map(listing.threads.map((thread) => [thread.id, thread])).values()];
-  stdout.write(uniqueThreads.map((thread) => {
-    const label = threadSelectorLabel(thread);
-    const uniqueLabel = label && thread.completionLabelUnique === true ? "1" : "0";
-    return `${thread.id}\t${label}\t${uniqueLabel}`;
-  }).join("\n"));
-  if (uniqueThreads.length) stdout.write("\n");
+    if (!listing.completed) return;
+    const uniqueThreads = [...new Map(listing.threads.map((thread) => [thread.id, thread])).values()];
+    stdout.write(uniqueThreads.map((thread) => {
+      const label = threadSelectorLabel(thread);
+      const uniqueLabel = label && thread.completionLabelUnique === true ? "1" : "0";
+      return `${thread.id}\t${label}\t${uniqueLabel}`;
+    }).join("\n"));
+    if (uniqueThreads.length) stdout.write("\n");
+  } finally {
+    stopSpinner();
+  }
 }
 
 function validateBrokerRun(request, workspace) {

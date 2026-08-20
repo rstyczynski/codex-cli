@@ -254,6 +254,7 @@ proc expect_prompt {} {
   }
 }
 spawn -noecho /bin/bash --noprofile --norc -i
+expect_before -re {\[[0-9]+\] [0-9]+} { puts stderr "completion created a visible Bash job"; exit 8 }
 expect_prompt
 send -- "eval \"\$(\"$env(PTY_NODE)\" \"$env(PTY_CLI)\" --bash_completion --codex \"$env(PTY_CODEX)\")\""
 send -- "\r"
