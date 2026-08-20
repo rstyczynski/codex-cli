@@ -18,10 +18,12 @@
   before applying a combined label update, so a later naming failure does not
   discard the selected current thread.
 - Make thread completion side-effect-free and shell-safe: reuse the command's
-  implicit workspace, never start a broker, cache at most the 50 newest-created
-  non-archived threads for three seconds, keep shared-prefix labels safe across
-  repeated Tab presses as one quoted argument, and preserve UUID-prefix
-  completion.
+  implicit workspace, never start a broker, search the complete active and
+  archived catalog only for a non-empty typed fragment, cache it for 30
+  seconds, and show a delayed spinner during a bounded ten-second first lookup.
+  Keep shared-prefix labels safe across repeated Tab presses as one quoted
+  argument, preserve UUID-prefix completion, and suggest deduplicated, quoted
+  displayed labels for `--thread-label` without substituting IDs.
 
 - Add `--thread-label LABEL` to set a native Codex thread name for a new,
   one-off, switched, or saved-current broker thread. Thread selectors and Bash

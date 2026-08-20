@@ -253,6 +253,7 @@ test("broker persists a thread across CLI calls and logs approvals", async (t) =
     "image-attachments-v1",
     "prompt-attachment-actions-v1",
     "thread-selectors-v1",
+    "thread-completion-query-v1",
     "thread-label-v1",
     "turn-commit-ack-v1",
     "thread-id-action-context-v1",

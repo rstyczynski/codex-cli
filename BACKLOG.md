@@ -293,8 +293,9 @@ manually.
 
 Delivered:
 
-- Completion queries only an existing broker, with a one-second total deadline
-  and no output when it is unavailable.
+- Completion queries only an existing broker, shows a delayed spinner while a
+  first full-catalog lookup is running, and produces no output when it is
+  unavailable.
 - Completion presents native names/previews, matches ID prefixes and label
   fragments, and is disabled for `--new`, direct, and socket invocations.
 - Tests cover live results, missing brokers, prefixes, and incompatible modes.
@@ -373,9 +374,10 @@ Delivered:
 
 - Completion uses the same implicit workspace selection as the command and
   queries only an already-running broker; pressing Tab never starts one.
-- Thread results are limited to the 50 most recently created non-archived
-  threads and cached for three seconds in the current Bash process, avoiding a
-  full global thread scan on every key press.
+- A non-empty ID prefix or label fragment searches the complete active and
+  archived catalog. Matching rows are cached for 30 seconds in both the broker
+  and current Bash process, avoiding a full global thread scan on every key
+  press; an empty value never dumps the whole catalog.
 - Completed labels are shell-quoted as one argument, including whitespace,
   apostrophes, glob characters, substitutions, and other shell metacharacters.
 - Shared label prefixes can be narrowed with more text and another Tab press
@@ -383,6 +385,11 @@ Delivered:
 - An ID-prefix query completes to the full UUID rather than replacing it with
   a potentially duplicated label. Label fragments still complete to readable
   labels for interactive use.
+- The first lookup is bounded to ten seconds and displays `Searching Codex
+  threads…` after 0.2 seconds, rather than failing silently at an arbitrary
+  one-second cutoff.
+- `--thread-label` suggests deduplicated displayed labels, including with
+  `--new`, without ever substituting a thread ID for the requested new name.
 - A real Bash/Readline PTY regression executes repeated shared-prefix
   completion and a metacharacter-heavy label, verifying one selector argument
   and no filename fallback. Integration coverage also checks workspace

@@ -78,10 +78,13 @@
   active and archived thread on each Tab, emit unsafe unquoted shell syntax,
   leave a shared label prefix unsafe to narrow across repeated Tab presses, or
   replace an unambiguous UUID prefix with an ambiguous label. Completion now
-  uses the command's implicit workspace, requires an existing broker, limits
-  results to the 50 newest-created non-archived threads, caches them for three
-  seconds, keeps repeated label completion in one quoted argument, and
-  preserves ID-prefix completion.
+  uses the command's implicit workspace, requires an existing broker, searches
+  the full active and archived catalog only for a non-empty typed fragment,
+  caches it for 30 seconds, keeps repeated label completion in one quoted
+  argument, and preserves ID-prefix completion. A delayed spinner makes a
+  first slow search visible, with a ten-second upper bound; `--thread-label`
+  also returns deduplicated, Bash-quoted displayed labels without inserting
+  thread IDs.
 
 - Fixed locally in v1.1.0: the broker protocol did not advertise native
   thread-label support, allowing a newer client to send `threadLabel` to an

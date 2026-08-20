@@ -698,23 +698,28 @@ registered completion definitions:
 
 It registers the same completion for `codex-cli`, `cdx`, and `hiai`, covering
 options, broker actions, file arguments, approval modes, models, available
-broker threads, and every registered prompt-action token. Thread completion
+broker threads, existing displayed labels suggested for `--thread-label`, and every
+registered prompt-action token. Thread completion
 uses the command's implicit workspace and queries only an already-running
-compatible broker; pressing Tab never starts one. A lookup has a one-second
-total deadline and its result is cached in the current Bash process for three
-seconds. It offers at most the 50 most recently created non-archived threads,
-so completion is a convenient recent-thread view rather than the complete
-catalog exposed by `--broker threads`.
+compatible broker; pressing Tab never starts one. Start with a non-empty ID
+prefix or label fragment: the broker searches the complete active and archived
+catalog, sends only matching rows, and caches that catalog for 30 seconds.
+The current Bash process also caches each query for 30 seconds. The first
+lookup is bounded to ten seconds; after 0.2 seconds it displays a temporary
+`Searching Codex threads…` spinner instead of silently returning no results.
+An empty value deliberately does not offer every thread in a large catalog.
 
-A label completion is quoted so Bash passes it as one argument. Duplicate
-labels complete to their unambiguous IDs, and an ID-prefix completion remains
-an ID rather than being replaced with a possibly duplicated label. When
-several labels share a prefix, continue typing inside the completed quoted
-prefix and press Tab again; the result remains one selector argument. The
-actual selectors accept full UUIDs, unique UUID prefixes, exact labels, and
-unique label fragments. Model completion first uses Codex's local catalog
-cache and falls back to the local app-server when necessary. The model result
-is cached in Bash for 30 seconds.
+A selector label completion is quoted so Bash passes it as one argument.
+Duplicate labels complete to their unambiguous IDs, and an ID-prefix completion
+remains an ID rather than being replaced with a possibly duplicated label.
+`--thread-label` suggests deduplicated displayed labels (native names or
+fallback previews) only—never IDs—while still allowing any new text.
+When several labels share a prefix, continue typing inside the completed
+quoted prefix and press Tab again; the result remains one argument. The actual
+selectors accept full UUIDs, unique UUID prefixes, exact labels, and unique
+label fragments. Model completion first uses Codex's local catalog cache and
+falls back to the local app-server when necessary. The model result is cached
+in Bash for 30 seconds.
 
 After sourcing, completion is registered for `codex-cli`, `cdx`, and `hiai`.
 When a name is not installed or present on `PATH`, the sourced code also

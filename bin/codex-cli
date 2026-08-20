@@ -151,6 +151,7 @@ const OPTION_DEFINITIONS = [
   { flags: ["--codex"], key: "codex", kind: "value" }, { flags: ["--completion-models"], key: "completionModels", kind: "boolean" },
   { flags: ["--completion-cached-models"], key: "completionCachedModels", kind: "boolean" },
   { flags: ["--completion-threads"], key: "completionThreads", kind: "boolean" },
+  { flags: ["--completion-thread-query"], key: "completionThreadQuery", kind: "value", environment: false },
 ];
 const OPTION_BY_FLAG = new Map(OPTION_DEFINITIONS.flatMap((definition) => definition.flags.map((flag) => [flag, definition])));
 
@@ -356,7 +357,7 @@ function applyEnvironmentOverrides(options, environment = process.env) {
 }
 
 function createDefaultOptions(invocationCwd) {
-  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, threadSwitchExplicit: false, threadLabel: undefined, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, completionThreads: false, currentThread: false, progress: true, interim: true, debug: false, diagnostics: false, agenticErrorCode: false, version: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
+  const options = { cwd: invocationCwd, json: false, stdin: false, interactive: false, repl: false, interruptPending: false, startDaemon: false, direct: false, broker: false, brokerServe: false, new: false, clearModel: false, modelExplicit: false, threadExplicit: false, threadSwitchExplicit: false, threadLabel: undefined, stateExplicit: false, experimentalApi: false, bashCompletion: false, completionModels: false, completionCachedModels: false, completionThreads: false, completionThreadQuery: undefined, currentThread: false, progress: true, interim: true, debug: false, diagnostics: false, agenticErrorCode: false, version: false, verbosity: "low", codex: "codex", state: ".codex-cli/codex-cli.json", timeout: 120, approval: "decline", prompt: [], images: [], threadParamSources: [], turnParamSources: [], threadParams: {}, turnParams: {}, threadParamsConfigured: false, configSources: [], showConfig: false, optionSources: {}, rawParameterSources: { threadParams: {}, turnParams: {} }, commandOptionKeys: new Set(), invocationCwd };
   for (const field of CONFIGURATION_FIELDS) {
     if (field.definition) options.optionSources[field.definition.key] = defaultSource();
   }
@@ -1379,15 +1380,69 @@ function bashCompletionScript(options) {
     "  fi",
     "}",
     "",
+    "_codex_cli_normalize_thread_query() {",
+    "  _CODEX_CLI_THREAD_QUERY=$1",
+    "  if [[ ${_CODEX_CLI_THREAD_QUERY:0:1} == \"'\" || ${_CODEX_CLI_THREAD_QUERY:0:1} == '\"' ]]; then",
+    "    _CODEX_CLI_THREAD_QUERY=${_CODEX_CLI_THREAD_QUERY:1}",
+    "  else",
+    "    _CODEX_CLI_THREAD_QUERY=${_CODEX_CLI_THREAD_QUERY//\\\\/}",
+    "  fi",
+    "}",
+    "",
+    "_codex_cli_unquote_completion_word() {",
+    "  local value=$1",
+    "  if [[ ${value:0:1} == \"'\" && ${value: -1} == \"'\" ]]; then",
+    "    value=${value:1:${#value}-2}",
+    "  elif [[ ${value:0:1} == '\"' && ${value: -1} == '\"' ]]; then",
+    "    value=${value:1:${#value}-2}",
+    "    value=${value//\\\\\"/\"}",
+    "    value=${value//\\\\\\\\/\\\\}",
+    "  else",
+    "    value=${value//\\\\ / }",
+    "    value=${value//\\\\\\\\/\\\\}",
+    "  fi",
+    "  _CODEX_CLI_COMPLETION_WORD=$value",
+    "}",
+    "",
+    "_codex_cli_thread_spinner() {",
+    "  local frame shown=false",
+    "  trap '[[ $shown == true ]] && printf \"\\r\\033[2K\" >&2; exit 0' TERM INT HUP",
+    "  sleep 0.2 || return",
+    "  shown=true",
+    "  while :; do",
+    "    for frame in '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏'; do",
+    "      printf '\\r\\033[2K%s Searching Codex threads…' \"$frame\" >&2",
+    "      sleep 0.1 || return",
+    "    done",
+    "  done",
+    "}",
+    "",
     "_codex_cli_thread_values() {",
-    "  local cache_key=$PWD context_arg",
-    "  local -a command=(\"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --completion-threads --timeout 1)",
+    "  local mode=${1-selector} raw_query=${2-} cache_key context_arg spinner_pid status monitor_was_enabled=false",
+    "  local -a command",
+    "  _codex_cli_normalize_thread_query \"$raw_query\"",
+    "  cache_key=\"$PWD|$mode|$_CODEX_CLI_THREAD_QUERY\"",
     "  for context_arg in \"${_CODEX_CLI_THREAD_CONTEXT_ARGS[@]}\"; do printf -v cache_key '%s|%q' \"$cache_key\" \"$context_arg\"; done",
-    "  if [[ ${_CODEX_CLI_THREAD_CACHE_KEY-} == \"$cache_key\" && -n ${_CODEX_CLI_THREAD_CACHE_AT+x} && $((SECONDS - _CODEX_CLI_THREAD_CACHE_AT)) -lt 3 ]]; then return; fi",
+    "  if [[ ${_CODEX_CLI_THREAD_CACHE_KEY-} == \"$cache_key\" && -n ${_CODEX_CLI_THREAD_CACHE_AT+x} && $((SECONDS - _CODEX_CLI_THREAD_CACHE_AT)) -lt 30 ]]; then return; fi",
+    "  if [[ -z $_CODEX_CLI_THREAD_QUERY ]]; then",
+    "    _CODEX_CLI_THREAD_CACHE=",
+    "    _CODEX_CLI_THREAD_CACHE_KEY=$cache_key",
+    "    _CODEX_CLI_THREAD_CACHE_AT=$SECONDS",
+    "    return",
+    "  fi",
+    "  command=(\"$_CODEX_CLI_NODE\" \"$_CODEX_CLI_SCRIPT\" --completion-threads --completion-thread-query \"$_CODEX_CLI_THREAD_QUERY\" --timeout 10)",
     "  command+=(\"${_CODEX_CLI_THREAD_CONTEXT_ARGS[@]}\")",
-    "  _CODEX_CLI_THREAD_CACHE=$(\"${command[@]}\" 2>/dev/null)",
+    "  [[ $mode == label ]] && command+=(--new false)",
+    "  if [[ -t 2 ]]; then",
+    "    case $- in *m*) set +m; monitor_was_enabled=true ;; esac",
+    "    _codex_cli_thread_spinner & spinner_pid=$!",
+    "    [[ $monitor_was_enabled == true ]] && set -m",
+    "  fi",
+    "  _CODEX_CLI_THREAD_CACHE=$(\"${command[@]}\" 2>/dev/null); status=$?",
+    "  if [[ -n ${spinner_pid-} ]]; then kill \"$spinner_pid\" 2>/dev/null; wait \"$spinner_pid\" 2>/dev/null; fi",
     "  _CODEX_CLI_THREAD_CACHE_KEY=$cache_key",
     "  _CODEX_CLI_THREAD_CACHE_AT=$SECONDS",
+    "  return $status",
     "}",
     "",
     "_codex_cli_quote_thread_label() {",
@@ -1404,8 +1459,16 @@ function bashCompletionScript(options) {
     "  fi",
     "}",
     "",
+    "_codex_cli_parse_thread_row() {",
+    "  local row=$1 rest",
+    "  _CODEX_CLI_THREAD_ROW_ID=${row%%$'\\t'*}",
+    "  rest=${row#*$'\\t'}",
+    "  _CODEX_CLI_THREAD_ROW_LABEL=${rest%%$'\\t'*}",
+    "  _CODEX_CLI_THREAD_ROW_UNIQUE=${rest#*$'\\t'}",
+    "}",
+    "",
     "_codex_cli_thread_words() {",
-    "  local values=$1 prefix=$2 match_prefix=$2 quote_mode=single id label unique exact_id exact_label id_matches=0 exact_label_matches=0 restore_nocasematch=false",
+    "  local values=$1 prefix=$2 match_prefix=$2 quote_mode=single row id label unique exact_id exact_label id_matches=0 exact_label_matches=0 restore_nocasematch=false",
     "  local -a exact_label_ids=()",
     "  COMPREPLY=()",
     "  if [[ ${match_prefix:0:1} == \"'\" ]]; then match_prefix=${match_prefix:1};",
@@ -1413,7 +1476,8 @@ function bashCompletionScript(options) {
     "  else match_prefix=${match_prefix//\\\\/}; fi",
     "  if ! shopt -q nocasematch; then shopt -s nocasematch; restore_nocasematch=true; fi",
     "  if [[ -n $match_prefix ]]; then",
-    "    while IFS=$'\\t' read -r id label unique; do",
+    "    while IFS= read -r row; do",
+    "      _codex_cli_parse_thread_row \"$row\"; id=$_CODEX_CLI_THREAD_ROW_ID; label=$_CODEX_CLI_THREAD_ROW_LABEL; unique=$_CODEX_CLI_THREAD_ROW_UNIQUE",
     "      if [[ $id == \"$match_prefix\" ]]; then exact_id=$id; elif [[ -n $id && $id == \"$match_prefix\"* ]]; then ((id_matches += 1)); fi",
     "      if [[ -n $label && $label == \"$match_prefix\" ]]; then ((exact_label_matches += 1)); exact_label_ids+=(\"$id\"); [[ $unique == 1 ]] && exact_label=$label; fi",
     "    done <<< \"$values\"",
@@ -1426,12 +1490,13 @@ function bashCompletionScript(options) {
     "      return 0",
     "    fi",
     "    if ((id_matches)); then",
-    "      while IFS=$'\\t' read -r id label unique; do [[ -n $id && $id == \"$match_prefix\"* ]] && COMPREPLY+=(\"$id\"); done <<< \"$values\"",
+    "      while IFS= read -r row; do _codex_cli_parse_thread_row \"$row\"; id=$_CODEX_CLI_THREAD_ROW_ID; [[ -n $id && $id == \"$match_prefix\"* ]] && COMPREPLY+=(\"$id\"); done <<< \"$values\"",
     "      [[ $restore_nocasematch == true ]] && shopt -u nocasematch",
     "      return 0",
     "    fi",
     "  fi",
-    "  while IFS=$'\\t' read -r id label unique; do",
+    "  while IFS= read -r row; do",
+    "    _codex_cli_parse_thread_row \"$row\"; id=$_CODEX_CLI_THREAD_ROW_ID; label=$_CODEX_CLI_THREAD_ROW_LABEL; unique=$_CODEX_CLI_THREAD_ROW_UNIQUE",
     "    [[ -n $id ]] || continue",
     "    if [[ -z $label ]]; then COMPREPLY+=(\"$id\"); continue; fi",
     "    if [[ $label == *\"$match_prefix\"* ]]; then",
@@ -1439,6 +1504,29 @@ function bashCompletionScript(options) {
     "        if [[ $quote_mode == double && $label == *'!'* ]]; then COMPREPLY+=(\"$id\"); else _codex_cli_quote_thread_label \"$label\" \"$quote_mode\"; COMPREPLY+=(\"$_CODEX_CLI_QUOTED_THREAD_LABEL\"); fi",
     "      else COMPREPLY+=(\"$id\"); fi",
     "    fi",
+    "  done <<< \"$values\"",
+    "  [[ $restore_nocasematch == true ]] && shopt -u nocasematch",
+    "  return 0",
+    "}",
+    "",
+    "_codex_cli_thread_label_words() {",
+    "  local values=$1 prefix=$2 match_prefix=$2 quote_mode=single row id label unique existing duplicate restore_nocasematch=false",
+    "  local -a labels=()",
+    "  COMPREPLY=()",
+    "  if [[ ${match_prefix:0:1} == \"'\" ]]; then match_prefix=${match_prefix:1};",
+    "  elif [[ ${match_prefix:0:1} == '\"' ]]; then quote_mode=double; match_prefix=${match_prefix:1};",
+    "  else match_prefix=${match_prefix//\\\\/}; fi",
+    "  if ! shopt -q nocasematch; then shopt -s nocasematch; restore_nocasematch=true; fi",
+    "  while IFS= read -r row; do",
+    "    _codex_cli_parse_thread_row \"$row\"; id=$_CODEX_CLI_THREAD_ROW_ID; label=$_CODEX_CLI_THREAD_ROW_LABEL; unique=$_CODEX_CLI_THREAD_ROW_UNIQUE",
+    "    [[ -n $label && $label == *\"$match_prefix\"* ]] || continue",
+    "    duplicate=false",
+    "    for existing in \"${labels[@]}\"; do [[ $existing == \"$label\" ]] && duplicate=true && break; done",
+    "    [[ $duplicate == true ]] && continue",
+    "    labels+=(\"$label\")",
+    "    [[ $quote_mode == double && $label == *'!'* ]] && continue",
+    "    _codex_cli_quote_thread_label \"$label\" \"$quote_mode\"",
+    "    COMPREPLY+=(\"$_CODEX_CLI_QUOTED_THREAD_LABEL\")",
     "  done <<< \"$values\"",
     "  [[ $restore_nocasematch == true ]] && shopt -u nocasematch",
     "  return 0",
@@ -1492,7 +1580,9 @@ function bashCompletionScript(options) {
     "  [[ ${COMP_WORDS[0]##*/} == hiai ]] && _CODEX_CLI_THREAD_CONTEXT_ARGS+=(--broker)",
     "  for ((index = context_start; index < COMP_CWORD - 1; index += 1)); do",
     "    case ${COMP_WORDS[index]} in",
-    "      --config|--cwd|--broker-socket|--socket|--codex) _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\"); if ((index + 1 < COMP_CWORD - 1)); then ((index += 1)); _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\"); fi ;;",
+    "      --config|--cwd|--broker-socket|--socket|--codex)",
+    "        _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\")",
+    "        if ((index + 1 < COMP_CWORD - 1)); then ((index += 1)); _codex_cli_unquote_completion_word \"${COMP_WORDS[index]}\"; _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"$_CODEX_CLI_COMPLETION_WORD\"); fi ;;",
     "      --direct|--new|--start-daemon|--repl) _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\"); case ${COMP_WORDS[index+1]-} in [Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|0|1) ((index += 1)); _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\") ;; esac ;;",
     "      --broker) _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\"); case ${COMP_WORDS[index+1]-} in start|status|stop|threads|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]|0|1) ((index += 1)); _CODEX_CLI_THREAD_CONTEXT_ARGS+=(\"${COMP_WORDS[index]}\") ;; esac ;;",
     "      --prompt|--image|--state|--model|--timeout|--approval|--approval-log|--thread-label|--config-json|--thread-params|--turn-params|--verbosity|--thread|--thread-switch) ((index + 1 < COMP_CWORD - 1)) && ((index += 1)) ;;",
@@ -1502,14 +1592,15 @@ function bashCompletionScript(options) {
     "  done",
     "  for ((index = 1; index < COMP_CWORD; index += 1)); do",
     "    case ${COMP_WORDS[index]} in",
-    "      --cwd) ((index += 1)); completion_cwd=${COMP_WORDS[index]} ;;",
-    "      --codex) ((index += 1)); completion_codex=${COMP_WORDS[index]} ;;",
+    "      --cwd) ((index += 1)); _codex_cli_unquote_completion_word \"${COMP_WORDS[index]}\"; completion_cwd=$_CODEX_CLI_COMPLETION_WORD ;;",
+    "      --codex) ((index += 1)); _codex_cli_unquote_completion_word \"${COMP_WORDS[index]}\"; completion_codex=$_CODEX_CLI_COMPLETION_WORD ;;",
     "      --broker-socket) ((index += 1)) ;;",
     "    esac",
     "  done",
     "  case $prev in",
     "    --model) _codex_cli_model_values \"$completion_cwd\" \"$completion_codex\"; _codex_cli_words \"$_CODEX_CLI_MODEL_CACHE\" \"$cur\"; return ;;",
-    "    --thread|--thread-switch) _codex_cli_thread_values; _codex_cli_thread_words \"$_CODEX_CLI_THREAD_CACHE\" \"$cur\"; return ;;",
+    "    --thread|--thread-switch) _codex_cli_thread_values selector \"$cur\"; _codex_cli_thread_words \"$_CODEX_CLI_THREAD_CACHE\" \"$cur\"; return ;;",
+    "    --thread-label) _codex_cli_thread_values label \"$cur\"; _codex_cli_thread_label_words \"$_CODEX_CLI_THREAD_CACHE\" \"$cur\"; return ;;",
     "    --approval) _codex_cli_words 'decline accept accept-for-session' \"$cur\"; return ;;",
     "    --verbosity) _codex_cli_words 'low medium high' \"$cur\"; return ;;",
     "    --show-config) if [[ $cur != -* ]]; then _codex_cli_words 'set all' \"$cur\"; return; fi ;;",
@@ -1927,13 +2018,14 @@ const BROKER_CAPABILITIES = [
   "image-attachments-v1",
   "prompt-attachment-actions-v1",
   "thread-selectors-v1",
+  "thread-completion-query-v1",
   "thread-label-v1",
   "turn-commit-ack-v1",
   "thread-id-action-context-v1",
 ];
 const BROKER_MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 const DEFAULT_BROKER_START_TIMEOUT_MS = 60000;
-const BROKER_THREAD_COMPLETION_CACHE_MS = 3000;
+const BROKER_THREAD_COMPLETION_CACHE_MS = 30000;
 const BROKER_TURN_COMMIT_ACK_TIMEOUT_MS = 5000;
 const TRANSIENT_THREAD_METADATA_RETRY_COUNT = 10;
 const TRANSIENT_THREAD_METADATA_RETRY_MS = 100;
@@ -2296,7 +2388,7 @@ async function printCompletionThreads(options) {
   const probeRemainingMs = deadline - Date.now();
   if (probeRemainingMs <= 0) return;
   const status = await probeBroker(socketPath, Math.max(1, Math.min(500, probeRemainingMs)));
-  if (!status?.capabilities?.includes("thread-selectors-v1")) return;
+  if (!status?.capabilities?.includes("thread-selectors-v1") || !status.capabilities.includes("thread-completion-query-v1")) return;
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) return;
   const listing = await new Promise((resolve) => {
@@ -2314,7 +2406,7 @@ async function printCompletionThreads(options) {
     const timer = setTimeout(finish, remainingMs);
     socket.once("error", finish);
     socket.once("close", finish);
-    socket.once("connect", () => sendBrokerMessage(socket, { type: "threads", completion: true }));
+    socket.once("connect", () => sendBrokerMessage(socket, { type: "threads", completion: true, query: options.completionThreadQuery }));
     new JsonLinePeer(socket, (message) => {
       if (message.type === "thread-list-item" && typeof message.thread?.id === "string") threads.push(message.thread);
       if (message.type === "threads-completed") { completed = true; finish(); }
@@ -2635,7 +2727,7 @@ async function serveBroker(options) {
           const normalized = threadSelectorLabel(thread).toLowerCase();
           if (normalized) labelCounts.set(normalized, (labelCounts.get(normalized) ?? 0) + 1);
         }
-        const threads = allThreads.filter((thread) => !thread.archived).slice(0, 50).map((thread) => {
+        const threads = allThreads.map((thread) => {
           const label = threadSelectorLabel(thread);
           return {
             ...thread,
@@ -2654,11 +2746,15 @@ async function serveBroker(options) {
     return threads ?? completionThreadCatalog();
   };
 
-  const listThreads = async (peer, completion = false) => {
+  const listThreads = async (peer, completion = false, query) => {
     const threads = completion
       ? await completionThreadCatalog()
       : await fetchCodexThreads(app, { includeArchived: true, sortDirection: "asc" });
-    for (const thread of threads) peer.send({ type: "thread-list-item", thread });
+    const normalizedQuery = completion && typeof query === "string" ? normalizeThreadText(query).toLowerCase() : "";
+    const matchingThreads = completion && normalizedQuery
+      ? threads.filter((thread) => thread.id.toLowerCase().startsWith(normalizedQuery) || threadSelectorLabel(thread).toLowerCase().includes(normalizedQuery))
+      : completion ? [] : threads;
+    for (const thread of matchingThreads) peer.send({ type: "thread-list-item", thread });
     peer.send({ type: "threads-completed" });
   };
 
@@ -2966,7 +3062,7 @@ async function serveBroker(options) {
       if (message.version !== BROKER_VERSION) { peer.send({ type: "error", code: "VERSION", exitCode: 2, message: "unsupported broker protocol version" }); return peer.close(); }
       if (message.type === "status") { peer.send({ type: "status", ready: appHealthy, pid: process.pid, instanceId, socketPath, active: Boolean(active), experimentalApi: options.experimentalApi, capabilities: BROKER_CAPABILITIES }); return peer.close(); }
       if (message.type === "threads") {
-        try { await listThreads(peer, message.completion === true); }
+        try { await listThreads(peer, message.completion === true, message.query); }
         catch (error) { peer.send({ type: "error", code: "THREAD_LIST_FAILED", exitCode: error.exitCode ?? 2, message: error.message }); }
         return peer.close();
       }
@@ -3287,6 +3383,7 @@ async function main() {
   if (options.threadExplicit && !options.thread?.trim()) { fail("--thread selector must not be empty"); return; }
   if (options.threadSwitchExplicit && !options.threadSwitch?.trim()) { fail("--thread-switch selector must not be empty"); return; }
   if (options.threadLabel !== undefined && !options.threadLabel.trim()) { fail("--thread-label must not be empty"); return; }
+  if (options.completionThreadQuery !== undefined && !options.completionThreads) { fail("--completion-thread-query is only valid with --completion-threads"); return; }
   if (options.completionThreads) {
     if (options.optionSources.cwd?.kind === "default") {
       options.cwd = await resolveImplicitBrokerWorkspace(invocationCwd);
